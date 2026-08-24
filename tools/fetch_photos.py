@@ -8,17 +8,19 @@ Aufruf:
 
 Ergebnis in --out:
     photos.json         Liste: id, x, z (Meter wie in index.json), h (Kompass in Grad),
-                        u (Mapillary-Nutzername), f (Dateiname), d (Aufnahmedatum)
-    photos/<id>.jpg     Bild, 512 px breit
+                        u (Mapillary-Nutzername), f (Dateiname), d (Aufnahmedatum),
+                        s (Nummer der Aufnahmefolge), n (Position darin)
+    photos/<id>.jpg     Bild, --width px breit
 
 Lizenz: Alle Mapillary-Bilder stehen unter CC BY-SA 4.0. Die App muss zu jedem
 Bild den Nutzernamen zeigen; deshalb steht er in photos.json.
 
 Vorgehen: Die Fotozone wird in ein Raster von ~0,01° zerlegt, jedes Rasterfeld
-per bbox-Abfrage geholt (die API verlangt kleine Bboxen). Danach werden die
-Bilder ausgedünnt: pro 40-m-Zelle und Blickrichtungssektor (45°) nur das neueste,
-bis --max erreicht ist. So verteilen sich die Fotos gleichmäßig statt sich an
-einer stark fotografierten Straße zu häufen.
+per bbox-Abfrage geholt (die API verlangt kleine Bboxen). Danach wird entlang
+jeder Aufnahmefolge (sequence) alle --spacing Meter ein Bild behalten, damit die
+App beim Fahren von Bild zu Bild springen kann (Fotofahrt). Übersteigt das
+--max, fallen die ältesten Aufnahmefolgen komplett weg, damit die verbleibenden
+lückenlos bleiben.
 """
 import argparse, io, json, math, os, sys, time
 from collections import defaultdict
@@ -27,7 +29,7 @@ import requests
 from PIL import Image
 
 API = "https://graph.mapillary.com/images"
-FIELDS = "id,geometry,compass_angle,captured_at,creator,thumb_1024_url,is_pano"
+FIELDS = "id,geometry,compass_angle,captured_at,creator,thumb_1024_url,is_pano,sequence"
 EARTH = 6378137.0
 RAD = math.pi / 180.0
 
@@ -55,8 +57,9 @@ def main():
     ap.add_argument("--lat", type=float, required=True)
     ap.add_argument("--lng", type=float, required=True)
     ap.add_argument("--radius-km", type=float, default=3)
-    ap.add_argument("--max", type=int, default=800)
-    ap.add_argument("--width", type=int, default=512)
+    ap.add_argument("--max", type=int, default=4000)
+    ap.add_argument("--spacing", type=float, default=8, help="Mindestabstand in Metern innerhalb einer Aufnahmefolge")
+    ap.add_argument("--width", type=int, default=480)
     ap.add_argument("--out", default="www/data")
     args = ap.parse_args()
 
@@ -97,8 +100,8 @@ def main():
         lat += step
     print(f"{len(found)} Bilder in der Fotozone gefunden")
 
-    # Ausdünnen: pro 40-m-Zelle und 45°-Sektor das neueste Bild
-    cands = []
+    # Nach Aufnahmefolge gruppieren, zeitlich sortieren, alle --spacing m ein Bild
+    seqs = defaultdict(list)
     for img in found.values():
         if img.get("is_pano"):
             continue
@@ -110,23 +113,28 @@ def main():
         if x * x + z * z > r_m * r_m:
             continue
         heading = float(img.get("compass_angle") or 0.0)
-        cands.append((img, x, z, heading))
+        seqs[img.get("sequence") or img["id"]].append((img, x, z, heading))
 
-    buckets = defaultdict(list)
-    for c in cands:
-        img, x, z, heading = c
-        key = (math.floor(x / 40), math.floor(z / 40), int(heading // 45) % 8)
-        buckets[key].append(c)
-    chosen = []
-    for key, lst in buckets.items():
-        lst.sort(key=lambda c: c[0].get("captured_at", 0), reverse=True)
-        chosen.append(lst[0])
-    chosen.sort(key=lambda c: c[0].get("captured_at", 0), reverse=True)
-    # gleichmäßig über die Zone verteilen: bei Überschuss jedes n-te nehmen
-    if len(chosen) > args.max:
-        stride = len(chosen) / args.max
-        chosen = [chosen[int(i * stride)] for i in range(args.max)]
-    print(f"{len(chosen)} Bilder ausgewählt (max {args.max})")
+    thinned = []   # (newest_captured, [Kandidaten in Reihenfolge])
+    for sid, lst in seqs.items():
+        lst.sort(key=lambda c: c[0].get("captured_at", 0))
+        kept, last = [], None
+        for c in lst:
+            if last is None or math.hypot(c[1] - last[1], c[2] - last[2]) >= args.spacing:
+                kept.append(c); last = c
+        if kept:
+            thinned.append((kept[-1][0].get("captured_at", 0), kept))
+    thinned.sort(key=lambda t: t[0], reverse=True)
+    print(f"{len(thinned)} Aufnahmefolgen, {sum(len(k) for _, k in thinned)} Bilder nach Ausdünnung auf {args.spacing} m")
+
+    chosen, seq_no = [], 0
+    for _, kept in thinned:
+        if len(chosen) + len(kept) > args.max:
+            continue                     # ganze Folge weglassen, damit Folgen lückenlos bleiben
+        for n, c in enumerate(kept):
+            chosen.append(c + (seq_no, n))
+        seq_no += 1
+    print(f"{len(chosen)} Bilder aus {seq_no} Aufnahmefolgen ausgewählt (max {args.max})")
 
     photo_dir = os.path.join(args.out, "photos")
     os.makedirs(photo_dir, exist_ok=True)
@@ -135,7 +143,7 @@ def main():
 
     out = []
     total = 0
-    for i, (img, x, z, heading) in enumerate(chosen):
+    for i, (img, x, z, heading, seq_no, n) in enumerate(chosen):
         try:
             r = get(session, img["thumb_1024_url"])
             im = Image.open(io.BytesIO(r.content)).convert("RGB")
@@ -143,7 +151,7 @@ def main():
             im = im.resize((args.width, max(1, int(h * args.width / w))), Image.LANCZOS)
             fname = f"{img['id']}.jpg"
             path = os.path.join(photo_dir, fname)
-            im.save(path, "JPEG", quality=72, optimize=True)
+            im.save(path, "JPEG", quality=65, optimize=True)
             total += os.path.getsize(path)
         except Exception as e:  # ein kaputtes Bild soll den Lauf nicht abbrechen
             print(f"  übersprungen {img['id']}: {e}", file=sys.stderr)
@@ -154,6 +162,7 @@ def main():
             "id": img["id"], "x": round(x, 1), "z": round(z, 1), "h": round(heading, 1),
             "u": creator.get("username", "unbekannt"), "f": fname,
             "d": time.strftime("%Y-%m-%d", time.gmtime(captured / 1000)) if captured else "",
+            "s": seq_no, "n": n,
         })
         if (i + 1) % 100 == 0:
             print(f"  {i+1}/{len(chosen)} geladen")
