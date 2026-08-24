@@ -1,0 +1,100 @@
+name: Weltdaten bauen
+
+# Von Hand starten: Reiter "Actions" -> "Weltdaten bauen" -> "Run workflow".
+# Holt OSM-Auszüge von Geofabrik, schneidet das Gebiet aus, zerlegt es in
+# Kacheln, lädt Mapillary-Fotos der Fotozone, legt alles unter www/data ab,
+# committet es und stößt danach den APK-Build an.
+on:
+  workflow_dispatch:
+    inputs:
+      lat:
+        description: "Mittelpunkt Breite (Naila)"
+        default: "50.3273"
+      lng:
+        description: "Mittelpunkt Länge (Naila)"
+        default: "11.7005"
+      radius_km:
+        description: "Radius Fahrwelt in km"
+        default: "30"
+      photo_radius_km:
+        description: "Radius Fotozone in km"
+        default: "3"
+      photo_max:
+        description: "Höchstzahl Fotos"
+        default: "800"
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  daten:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Quelltext holen
+        uses: actions/checkout@v4
+
+      - name: Werkzeuge installieren
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq osmium-tool
+          pip install --quiet osmium requests pillow
+
+      - name: OSM-Auszüge laden
+        run: |
+          mkdir -p osm
+          for r in europe/germany/bayern/oberfranken europe/germany/thueringen europe/germany/sachsen; do
+            n=$(basename "$r")
+            curl -sSfL -o "osm/$n.osm.pbf" "https://download.geofabrik.de/$r-latest.osm.pbf"
+            ls -la "osm/$n.osm.pbf"
+          done
+
+      - name: Gebiet ausschneiden
+        run: |
+          BBOX=$(python3 - <<'PY'
+          import math, os
+          lat=float("${{ inputs.lat }}"); lng=float("${{ inputs.lng }}"); r=float("${{ inputs.radius_km }}")*1000
+          dlat=r/111320; dlng=r/(111320*math.cos(math.radians(lat)))
+          print(f"{lng-dlng:.5f},{lat-dlat:.5f},{lng+dlng:.5f},{lat+dlat:.5f}")
+          PY
+          )
+          echo "Bbox: $BBOX"
+          osmium merge osm/*.osm.pbf -o osm/alle.osm.pbf --overwrite
+          osmium extract -b "$BBOX" osm/alle.osm.pbf -o osm/region.osm.pbf --overwrite
+          ls -la osm/region.osm.pbf
+
+      - name: Kacheln bauen
+        run: |
+          python3 tools/build_tiles.py osm/region.osm.pbf \
+            --lat "${{ inputs.lat }}" --lng "${{ inputs.lng }}" \
+            --radius-km "${{ inputs.radius_km }}" --out www/data
+          du -sh www/data/tiles
+
+      - name: Fotos laden
+        env:
+          MAPILLARY_TOKEN: ${{ secrets.MAPILLARY_TOKEN }}
+        run: |
+          python3 tools/fetch_photos.py \
+            --lat "${{ inputs.lat }}" --lng "${{ inputs.lng }}" \
+            --radius-km "${{ inputs.photo_radius_km }}" --max "${{ inputs.photo_max }}" \
+            --out www/data
+          du -sh www/data/photos || true
+
+      - name: Daten committen
+        run: |
+          git config user.name "gangfolge-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add www/data
+          if git diff --cached --quiet; then
+            echo "Keine Änderungen an den Daten."
+          else
+            git commit -m "Weltdaten: r=${{ inputs.radius_km }} km, Fotos r=${{ inputs.photo_radius_km }} km"
+            git push
+          fi
+
+      - name: APK-Build anstoßen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run build-apk.yml --ref "${{ github.ref_name }}"
