@@ -446,7 +446,9 @@ function loadTile(key){
     S.tiles.set(key, t); return t.promise;
   }
   t = {status:"loading", data:null};
-  t.promise = fetchGz(DATA_URL + "tiles/" + key + ".json.gz").then(d=>{
+  t.promise = fetchGz(DATA_URL + "tiles/" + key + ".json.gz")
+    .catch(()=> fetchGz(DATA_URL + "tiles/" + key + ".json"))   // Android entfernt .gz beim Bauen
+    .then(d=>{
     t.data = d; t.status = "ready";
     t.segments = segmentsOf(d.roads);
     return d;
