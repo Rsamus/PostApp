@@ -16,6 +16,15 @@ jobs:
       - name: Quelltext holen
         uses: actions/checkout@v4
 
+      - name: Bibliotheken bereitstellen
+        # Leaflet und three.js kommen in die App, damit sie ohne Internet startet.
+        run: |
+          mkdir -p www/lib
+          curl -sSfL -o www/lib/leaflet.js  https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js
+          curl -sSfL -o www/lib/leaflet.css https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css
+          curl -sSfL -o www/lib/three.min.js https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js
+          ls -la www/lib
+
       - name: Node einrichten
         uses: actions/setup-node@v4
         with:
