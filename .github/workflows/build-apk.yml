@@ -1,0 +1,73 @@
+name: APK bauen
+
+# Läuft bei jedem Push und lässt sich außerdem im Reiter "Actions" von Hand
+# starten: Workflow auswählen -> "Run workflow".
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Quelltext holen
+        uses: actions/checkout@v4
+
+      - name: Node einrichten
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Java einrichten
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Android SDK einrichten
+        uses: android-actions/setup-android@v3
+
+      - name: Abhängigkeiten installieren
+        run: npm install --no-audit --no-fund
+
+      - name: Android-Projekt erzeugen
+        run: npx cap add android
+
+      - name: Web-Dateien übernehmen
+        run: npx cap sync android
+
+      - name: Berechtigung für Standort ergänzen
+        run: |
+          MANIFEST=android/app/src/main/AndroidManifest.xml
+          if ! grep -q "ACCESS_FINE_LOCATION" "$MANIFEST"; then
+            python3 - "$MANIFEST" <<'PY'
+          import sys, re
+          path = sys.argv[1]
+          xml = open(path, encoding="utf-8").read()
+          perms = (
+            '\n    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />'
+            '\n    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />'
+          )
+          xml = re.sub(r'(</manifest>)', perms + r'\n\1', xml, count=1)
+          open(path, "w", encoding="utf-8").write(xml)
+          print("Standortberechtigungen ergänzt")
+          PY
+          fi
+          grep -c "uses-permission" android/app/src/main/AndroidManifest.xml
+
+      - name: APK bauen
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: APK bereitstellen
+        uses: actions/upload-artifact@v4
+        with:
+          name: gangfolge-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
