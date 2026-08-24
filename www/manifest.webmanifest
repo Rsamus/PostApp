@@ -1,0 +1,20 @@
+{
+  "name": "Gangfolge Simulator",
+  "short_name": "Gangfolge",
+  "description": "Fahrsimulator zum Trainieren der Zustellroute, gebaut aus OpenStreetMap-Daten.",
+  "id": "/gangfolge/",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0E1116",
+  "theme_color": "#0E1116",
+  "lang": "de",
+  "dir": "ltr",
+  "categories": ["navigation", "education", "games"],
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
