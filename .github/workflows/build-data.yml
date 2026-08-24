@@ -21,7 +21,10 @@ on:
         default: "3"
       photo_max:
         description: "Höchstzahl Fotos"
-        default: "800"
+        default: "4000"
+      photo_spacing:
+        description: "Abstand zwischen Fotos einer Aufnahmefolge in Metern"
+        default: "8"
 
 permissions:
   contents: write
@@ -79,7 +82,7 @@ jobs:
           python3 tools/fetch_photos.py \
             --lat "${{ inputs.lat }}" --lng "${{ inputs.lng }}" \
             --radius-km "${{ inputs.photo_radius_km }}" --max "${{ inputs.photo_max }}" \
-            --out www/data
+            --spacing "${{ inputs.photo_spacing }}" --out www/data
           du -sh www/data/photos || true
 
       - name: Daten committen
