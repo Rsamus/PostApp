@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Gangfolge Simulator</title>
+<title>Gangfolge</title>
 <link rel="manifest" href="manifest.webmanifest">
 <meta name="theme-color" content="#0E1116">
 <meta name="mobile-web-app-capable" content="yes">
@@ -13,42 +13,31 @@
 
 <!--
   ============================================================================
-  GANGFOLGE SIMULATOR v1.0
+  GANGFOLGE v2 – Zustellsimulator, komplett offline
   ============================================================================
 
-  Ein gerenderter Fahrsimulator, dessen Welt aus echten Kartendaten gebaut wird:
-  Straßenachsen, Gebäudegrundrisse und Hausnummern kommen von OpenStreetMap über
-  die Overpass-API. Kein API-Schlüssel, keine Abrechnung, keine Kostengrenze.
+  Die Welt liegt als Kacheln in data/tiles (erzeugt von tools/build_tiles.py
+  aus OpenStreetMap), Straßenfotos in data/photos (Mapillary, CC BY-SA).
+  Beim Fahren werden nur die Kacheln um das Auto geladen, ferne wieder entladen.
 
-  WARUM NICHT GOOGLE ALS DATENQUELLE
-  Die Google Maps Platform liefert Fotos, Kacheln und Routen, aber keine
-  Vektorgeometrie zum Nachbauen einer Welt. Zusätzlich untersagen ihre
-  Nutzungsbedingungen das Ableiten eigener Datensätze aus Maps-Inhalten.
-  OpenStreetMap steht unter der ODbL und erlaubt genau das ausdrücklich.
-  Bei Veröffentlichung ist der Hinweis "© OpenStreetMap-Mitwirkende" Pflicht.
+  MODI
+  Freie Fahrt      überall im Gebiet fahren, optional ab einem gesetzten Startpunkt
+  Zustellung       Stopps in Reihenfolge anfahren; am Stopp anhalten, "Zugestellt"
 
   BEDIENUNG
   W / Pfeil hoch   Gas          S / Pfeil runter   bremsen, dann rückwärts
-  A / D            lenken       Ziehen mit Maus    Kamera umsehen
-  V                Ansicht wechseln: Verfolger, Cockpit, Vogelperspektive
-  R                Kamera hinter das Auto     Leertaste  Pause
-  1-4              antworten
-  Handy: Pedale und Lenktasten unten, Kamera per Wischen.
+  A / D            lenken       Ziehen             Kamera umsehen
+  V                Ansicht      R                  Blick nach vorn
+  Leertaste        Pause / am Stopp "Zugestellt"
+  Handy: Tasten unten, Kamera per Wischen.
 
-  ABLAUF
-  Karte öffnen -> Stopps in Zustellreihenfolge antippen -> Welt bauen -> fahren.
-  Die Welt umfasst das Rechteck über allen Stopps plus Rand. Sehr große Gebiete
-  dauern beim Laden lange; ab etwa 4 Quadratkilometern warnt die App.
-
-  Die Straßen sind echte Fahrbahnen mit Breite: Wer den Rand überfährt, wird
-  zurückgedrängt. Gebäude stehen auf ihren tatsächlichen Grundrissen.
+  Bibliotheken liegen unter lib/ (der APK-Workflow lädt sie beim Bauen).
+  Fehlen sie, etwa in einer Browser-Vorschau, wird auf cdnjs ausgewichen.
   ============================================================================
 -->
 
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700&family=Archivo+Narrow:wght@600;700&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="lib/leaflet.css"
+      onerror="this.onerror=null;this.href='https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css'">
 
 <style>
   :root{
@@ -61,9 +50,10 @@
        font-size:15px;line-height:1.5;overscroll-behavior:none;-webkit-text-size-adjust:100%;
        -webkit-user-select:none;user-select:none;}
   button{font-family:inherit;color:inherit;cursor:pointer;}
-  input{-webkit-user-select:text;user-select:text;}
+  input,select{-webkit-user-select:text;user-select:text;font-family:inherit;}
   :focus-visible{outline:2px solid var(--signal);outline-offset:2px;}
-  .eyebrow{font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.18em;
+  .mono{font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace;}
+  .eyebrow{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11px;letter-spacing:.18em;
            text-transform:uppercase;color:var(--muted);}
   .screen{position:fixed;inset:0;display:none;}
   .screen.on{display:block;}
@@ -71,109 +61,110 @@
        padding:12px 18px;font-weight:700;font-size:14px;}
   .btn:hover:not([disabled]){border-color:var(--muted);}
   .btn-primary{background:var(--signal);border-color:var(--signal);color:#12151A;}
-  .btn-primary:hover:not([disabled]){background:#FFC91F;border-color:#FFC91F;}
   .btn-sm{padding:8px 12px;font-size:13px;}
   .btn[disabled]{opacity:.45;cursor:not-allowed;}
-  .msg{display:none;padding:11px 14px;margin-top:14px;font-size:14px;border-left:2px solid;}
+  .msg{display:none;padding:11px 14px;margin:10px 14px 0;font-size:13.5px;border-left:2px solid;white-space:pre-line;}
   .msg.on{display:block;}
   .msg.err{border-color:var(--stamp);background:rgba(200,72,46,.1);color:#F0B4A6;}
   .msg.info{border-color:var(--signal);background:rgba(242,183,5,.09);color:#F0DCA6;}
 
   /* ---------------- Planer ---------------- */
-  #plan.on{display:grid;grid-template-columns:330px 1fr;}
-  #map{width:100%;height:100%;background:#0b0d10;}
+  #plan.on{display:grid;grid-template-columns:340px 1fr;}
+  #map{width:100%;height:100%;background:#12161C;}
   #side{background:var(--panel);border-right:1px solid var(--edge);display:flex;
         flex-direction:column;min-height:0;padding-top:env(safe-area-inset-top);}
-  #side header{padding:16px 14px 12px;border-bottom:1px solid var(--edge);}
+  #side header{padding:14px 14px 10px;border-bottom:1px solid var(--edge);}
   .brand{display:flex;align-items:baseline;gap:10px;border-bottom:2px solid var(--signal);
-         padding-bottom:8px;margin-bottom:10px;}
-  .brand h1{font-family:"Archivo Narrow",sans-serif;font-weight:700;font-size:30px;
+         padding-bottom:6px;margin-bottom:8px;}
+  .brand h1{font-family:"Archivo Narrow","Archivo",sans-serif;font-weight:700;font-size:28px;
             line-height:.95;margin:0;text-transform:uppercase;}
   .brand span{color:var(--signal);}
   #side p.small{font-size:12.5px;color:var(--muted);margin:0;}
-  #searchbar{display:flex;gap:6px;padding:10px 14px;border-bottom:1px solid var(--edge);}
-  #searchbar input{flex:1;background:var(--ink);border:1px solid var(--edge);border-radius:2px;
-    color:var(--paper);padding:8px 10px;font-family:"IBM Plex Mono",monospace;font-size:13px;}
-  #searchbar input::placeholder{color:#5B6470;}
+  #toolbar{display:flex;gap:6px;padding:10px 14px;border-bottom:1px solid var(--edge);flex-wrap:wrap;}
+  #toolbar input{flex:1;min-width:120px;background:var(--ink);border:1px solid var(--edge);border-radius:2px;
+    color:var(--paper);padding:8px 10px;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:13px;}
+  #toolbar input::placeholder{color:#5B6470;}
   #list{flex:1;overflow-y:auto;padding:8px;min-height:0;}
-  #list .empty{color:var(--muted);font-size:13px;padding:14px;text-align:center;}
+  #list .empty{color:var(--muted);font-size:13px;padding:14px;text-align:center;line-height:1.6;}
   .row{display:flex;align-items:center;gap:8px;background:rgba(14,17,22,.6);
        border-left:3px solid var(--signal);padding:7px 8px;margin-bottom:4px;}
-  .row .n{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--muted);min-width:20px;}
-  .row .name{flex:1;min-width:0;font-size:13px;background:transparent;border:0;color:var(--paper);
-             padding:2px 0;font-family:inherit;}
+  .row .n{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11px;color:var(--muted);min-width:20px;}
+  .row .name{flex:1;min-width:0;font-size:13px;background:transparent;border:0;color:var(--paper);padding:2px 0;}
   .row .name:focus{outline:0;border-bottom:1px solid var(--edge);}
-  .row .mini{background:transparent;border:0;color:var(--muted);font-size:13px;padding:2px 4px;line-height:1;}
+  .row .mini{background:transparent;border:0;color:var(--muted);font-size:14px;padding:2px 5px;line-height:1;}
   .row .mini:hover{color:var(--paper);}
+  #routes{border-top:1px solid var(--edge);padding:10px 14px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;}
+  #routes select,#routes input{background:var(--ink);border:1px solid var(--edge);border-radius:2px;color:var(--paper);
+    padding:7px 9px;font-size:13px;flex:1;min-width:110px;}
   #side footer{border-top:1px solid var(--edge);padding:12px;
     padding-bottom:calc(12px + env(safe-area-inset-bottom));display:flex;flex-wrap:wrap;gap:8px;}
-  #planMsg{margin:10px 14px 0;}
-  .leaflet-container{background:#0b0d10;}
-  .stopmark{background:var(--signal);color:#12151A;font-family:"IBM Plex Mono",monospace;
+  .leaflet-container{background:#12161C;font-family:inherit;}
+  .leaflet-control-attribution{background:rgba(14,17,22,.8)!important;color:var(--muted)!important;font-size:10px!important;}
+  .leaflet-control-attribution a{color:var(--muted)!important;}
+  .stopmark{background:var(--signal);color:#12151A;font-family:"IBM Plex Mono",ui-monospace,monospace;
     font-size:12px;font-weight:600;width:24px;height:24px;border-radius:50%;
     display:flex;align-items:center;justify-content:center;border:2px solid #12151A;}
+  .stopmark.start{background:var(--ok);}
+  #zoomHint{position:absolute;z-index:500;left:50%;top:14px;transform:translateX(-50%);
+    background:rgba(14,17,22,.85);border:1px solid var(--edge);padding:6px 12px;font-size:12px;
+    color:var(--muted);pointer-events:none;display:none;}
+  #zoomHint.on{display:block;}
+  #mapWrap{position:relative;min-height:0;}
+  #mapWrap #map{position:absolute;inset:0;}
 
-  /* ---------------- Bauphase ---------------- */
+  /* ---------------- Laden ---------------- */
   #build{background:var(--ink);display:none;align-items:center;justify-content:center;padding:24px;}
   #build.on{display:flex;}
-  .buildbox{width:min(500px,100%);}
-  .buildbox h2{font-family:"Archivo Narrow",sans-serif;text-transform:uppercase;
+  .buildbox{width:min(480px,100%);}
+  .buildbox h2{font-family:"Archivo Narrow","Archivo",sans-serif;text-transform:uppercase;
                font-size:clamp(26px,7vw,38px);margin:6px 0 8px;}
   #buildInfo{color:var(--muted);font-size:14px;margin:0 0 18px;}
   .bar{height:3px;background:var(--edge);overflow:hidden;}
   .bar i{display:block;height:100%;width:0;background:var(--signal);transition:width .25s linear;}
-  #buildLog{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--muted);
-            margin-top:12px;white-space:pre-line;min-height:5em;}
+  #buildLog{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:12px;color:var(--muted);
+            margin-top:12px;white-space:pre-line;min-height:4em;}
 
   /* ---------------- Fahrt ---------------- */
   #world{position:absolute;inset:0;background:#0b0d10;touch-action:none;cursor:grab;display:block;}
   #world.looking{cursor:grabbing;}
   #labels{position:absolute;inset:0;pointer-events:none;z-index:2;overflow:hidden;}
-  .tag{position:absolute;transform:translate(-50%,-100%);font-family:"IBM Plex Mono",monospace;
+  .tag{position:absolute;transform:translate(-50%,-100%);font-family:"IBM Plex Mono",ui-monospace,monospace;
        font-size:11px;color:var(--paper);background:rgba(14,17,22,.78);border:1px solid var(--edge);
        padding:2px 6px;white-space:nowrap;}
-  .tag.goal{border-color:var(--signal);color:var(--signal);}
+  .tag.goal{border-color:var(--signal);color:var(--signal);font-weight:600;}
 
   #hud{position:absolute;top:0;left:0;right:0;z-index:5;display:flex;align-items:center;gap:6px;
        padding:calc(10px + env(safe-area-inset-top)) 14px 10px;flex-wrap:wrap;}
   #hud .spacer{flex:1;}
-  .stat{text-align:right;line-height:1.15;}
-  .stat b{font-family:"IBM Plex Mono",monospace;font-size:19px;font-weight:600;display:block;}
-  .stat small{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);}
   .iconbtn{background:rgba(22,27,34,.82);border:1px solid var(--edge);border-radius:2px;
            padding:8px 10px;font-size:12.5px;font-weight:700;}
-  .iconbtn.hot{background:var(--signal);border-color:var(--signal);color:#12151A;}
+  #nav{display:flex;align-items:center;gap:8px;background:rgba(22,27,34,.82);border:1px solid var(--edge);
+       border-radius:2px;padding:6px 10px;}
+  #arrow{width:22px;height:22px;transition:transform .15s linear;}
+  #arrow svg{display:block;width:100%;height:100%;}
+  #navText{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:13px;line-height:1.2;}
+  #navText small{display:block;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);}
 
-  #strip{position:absolute;z-index:5;left:14px;top:70px;bottom:180px;width:190px;
+  #strip{position:absolute;z-index:5;left:14px;top:76px;bottom:190px;width:200px;
          display:flex;flex-direction:column;gap:3px;overflow-y:auto;padding-right:4px;}
   #strip::-webkit-scrollbar{width:3px;}
   #strip::-webkit-scrollbar-thumb{background:var(--edge);}
   .stop{display:flex;align-items:center;gap:9px;background:rgba(22,27,34,.8);
         border-left:3px solid var(--edge);padding:7px 9px;font-size:12.5px;}
-  .stop .n{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--muted);min-width:20px;}
+  .stop .n{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11px;color:var(--muted);min-width:20px;}
   .stop .t{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#B9C0C9;}
-  .stop.sealed .t{color:#4E5763;letter-spacing:.14em;}
   .stop.now{border-left-color:var(--signal);background:rgba(242,183,5,.14);}
   .stop.now .t{color:var(--paper);font-weight:700;}
-  .stop.hit{border-left-color:var(--ok);}
-  .stop.miss{border-left-color:var(--stamp);}
+  .stop.done{border-left-color:var(--ok);}
+  .stop.done .t{color:#6F7A87;text-decoration:line-through;}
 
   #card{position:absolute;z-index:7;left:50%;transform:translateX(-50%);
-        bottom:calc(104px + env(safe-area-inset-bottom));width:min(560px,calc(100vw - 28px));
-        background:rgba(18,22,28,.94);border:1px solid var(--edge);border-radius:3px;
-        padding:14px 16px 16px;}
-  #card.hidden{display:none;}
-  #question{font-family:"Archivo Narrow",sans-serif;font-weight:700;font-size:20px;margin:6px 0 12px;}
-  .opts{display:grid;gap:7px;}
-  .opt{text-align:left;background:var(--panel);border:1px solid var(--edge);border-radius:2px;
-       padding:11px 13px;font-size:14.5px;display:flex;gap:10px;align-items:center;}
-  .opt .k{font-family:"IBM Plex Mono",monospace;color:var(--muted);font-size:12px;}
-  .opt.correct{border-color:var(--ok);background:rgba(95,167,119,.16);}
-  .opt.wrong{border-color:var(--stamp);background:rgba(200,72,46,.16);}
-  .opt[disabled]{cursor:default;}
-  #verdict{margin-top:12px;display:none;align-items:center;gap:12px;flex-wrap:wrap;}
-  #verdict.on{display:flex;}
-  #verdictText b{font-family:"Archivo Narrow",sans-serif;font-size:17px;}
+        bottom:calc(104px + env(safe-area-inset-bottom));width:min(520px,calc(100vw - 28px));
+        background:rgba(18,22,28,.94);border:1px solid var(--signal);border-radius:3px;
+        padding:14px 16px 16px;display:none;}
+  #card.on{display:block;}
+  #cardTitle{font-family:"Archivo Narrow","Archivo",sans-serif;font-weight:700;font-size:22px;margin:6px 0 12px;}
+  #card .actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;}
 
   #controls{position:absolute;z-index:6;left:0;right:0;
             bottom:calc(14px + env(safe-area-inset-bottom));
@@ -187,33 +178,42 @@
 
   #tacho{position:absolute;z-index:5;right:16px;bottom:calc(84px + env(safe-area-inset-bottom));
          text-align:right;line-height:1;}
-  #kmh{font-family:"IBM Plex Mono",monospace;font-weight:600;font-size:44px;letter-spacing:-.02em;display:block;}
+  #kmh{font-family:"IBM Plex Mono",ui-monospace,monospace;font-weight:600;font-size:44px;letter-spacing:-.02em;display:block;}
   #tacho small{font-size:10px;letter-spacing:.22em;color:var(--muted);text-transform:uppercase;}
-  #gear{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--signal);margin-top:6px;}
-  #curb{color:var(--stamp);font-size:11px;letter-spacing:.14em;text-transform:uppercase;
-        margin-top:4px;visibility:hidden;}
+  #gear{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:12px;color:var(--signal);margin-top:6px;}
+  #curb{color:var(--stamp);font-size:11px;letter-spacing:.14em;text-transform:uppercase;margin-top:4px;visibility:hidden;}
   #curb.on{visibility:visible;}
-  #dist{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--muted);margin-top:8px;}
+  #street{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:12px;color:var(--muted);margin-top:8px;
+          max-width:44vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+
+  #photo{position:absolute;z-index:5;right:14px;top:76px;width:min(240px,34vw);
+         background:rgba(14,17,22,.88);border:1px solid var(--edge);padding:4px;display:none;}
+  #photo.on{display:block;}
+  #photo img{display:block;width:100%;height:auto;}
+  #photo figcaption{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:9.5px;color:var(--muted);
+         padding:4px 2px 1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 
   #toast{position:absolute;z-index:8;top:50%;left:50%;transform:translate(-50%,-50%);
     background:rgba(18,22,28,.95);border:1px solid var(--edge);padding:16px 22px;
-    font-family:"IBM Plex Mono",monospace;font-size:14px;display:none;text-align:center;
+    font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:14px;display:none;text-align:center;
     white-space:pre-line;line-height:1.6;max-width:min(420px,calc(100vw - 40px));}
   #toast.on{display:block;}
   #credit{position:absolute;z-index:5;left:14px;bottom:calc(14px + env(safe-area-inset-bottom));
           font-size:10px;color:var(--muted);letter-spacing:.06em;}
 
   @media (max-width:760px){
-    #plan.on{grid-template-columns:1fr;grid-template-rows:1fr 44vh;}
-    #map{grid-row:1;} #side{grid-row:2;border-right:0;border-top:1px solid var(--edge);}
-    #strip{width:120px;top:70px;bottom:220px;}
+    #plan.on{grid-template-columns:1fr;grid-template-rows:1fr 46vh;}
+    #mapWrap{grid-row:1;} #side{grid-row:2;border-right:0;border-top:1px solid var(--edge);}
+    #strip{width:130px;top:76px;bottom:230px;}
     .stop{font-size:11.5px;padding:6px 7px;}
     #card{bottom:calc(96px + env(safe-area-inset-bottom));padding:12px 13px 14px;}
-    #question{font-size:17px;}
+    #cardTitle{font-size:18px;}
     #kmh{font-size:32px;}
     #controls button{width:60px;height:52px;}
     #credit{display:none;}
+    #photo{width:38vw;top:auto;bottom:calc(150px + env(safe-area-inset-bottom));}
   }
+  @media (prefers-reduced-motion:reduce){ *{transition:none!important;} }
 </style>
 </head>
 <body>
@@ -224,48 +224,56 @@
     <header>
       <div class="brand">
         <h1>Gang<span>folge</span></h1>
-        <p class="eyebrow">Simulator</p>
+        <p class="eyebrow" id="areaTag">Gebiet wird geladen</p>
       </div>
-      <p class="small">Tipp die Stopps in Zustellreihenfolge auf die Karte. Aus dem umschlossenen Gebiet wird die Fahrwelt gebaut – echte Straßen, echte Grundrisse, echte Hausnummern.</p>
+      <p class="small">Tipp die Stopps in Zustellreihenfolge auf die Karte. Der erste Stopp ist der Start. Ohne Stopps beginnt die freie Fahrt in der Mitte des Gebiets.</p>
     </header>
 
-    <div id="searchbar">
-      <input id="searchInput" type="text" placeholder="Ort oder Straße suchen" spellcheck="false">
-      <button class="btn btn-sm" id="searchGo">Los</button>
+    <div id="toolbar">
+      <input id="searchInput" type="text" placeholder="Ort oder Straße (braucht Internet)" spellcheck="false">
+      <button class="btn btn-sm" id="searchGo">Suchen</button>
+      <button class="btn btn-sm" id="homeBtn" title="Mitte des Gebiets">Mitte</button>
+      <button class="btn btn-sm" id="gpsBtn" title="Eigener Standort">GPS</button>
     </div>
 
     <div class="msg err" id="planMsg"></div>
     <div id="list"><p class="empty">Noch keine Stopps.</p></div>
 
-    <footer>
-      <button class="btn btn-primary btn-sm" id="startTraining">Welt bauen &amp; trainieren</button>
-      <button class="btn btn-sm" id="startRoam">Nur fahren</button>
+    <div id="routes">
+      <input id="routeName" type="text" placeholder="Routenname" spellcheck="false">
       <button class="btn btn-sm" id="saveRoute">Sichern</button>
-      <button class="btn btn-sm" id="loadRouteBtn">Laden</button>
+      <select id="routeSelect"><option value="">Gespeicherte Routen</option></select>
+      <button class="btn btn-sm" id="loadRoute">Laden</button>
+      <button class="btn btn-sm" id="deleteRoute">Löschen</button>
+    </div>
+
+    <footer>
+      <button class="btn btn-primary btn-sm" id="startRoute">Zustellung starten</button>
+      <button class="btn btn-sm" id="startFree">Freie Fahrt</button>
       <button class="btn btn-sm" id="clearRoute">Leeren</button>
+      <button class="btn btn-sm" id="exportRoute">Exportieren</button>
+      <button class="btn btn-sm" id="importRouteBtn">Importieren</button>
       <input type="file" id="routeFile" accept=".json,application/json" hidden>
     </footer>
   </aside>
-  <div id="map"></div>
+  <div id="mapWrap">
+    <div id="map"></div>
+    <div id="zoomHint">Näher heranzoomen, dann erscheinen Straßen und Häuser</div>
+  </div>
 </section>
 
-<!-- ===================== BAUPHASE ===================== -->
+<!-- ===================== LADEN ===================== -->
 <section id="build" class="screen">
   <div class="buildbox">
-    <p class="eyebrow">Schritt 2</p>
-    <h2>Welt bauen</h2>
-    <p id="buildInfo">Straßen, Gebäude und Hausnummern werden von OpenStreetMap geladen und in eine befahrbare Welt übersetzt.</p>
+    <p class="eyebrow">Einen Moment</p>
+    <h2>Welt wird geladen</h2>
+    <p id="buildInfo">Die Kacheln rund um den Start werden aus dem Gerätespeicher geholt.</p>
     <div class="bar"><i id="buildBar"></i></div>
     <p id="buildLog"></p>
     <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;">
       <button class="btn btn-sm" id="buildCancel">Zurück zur Karte</button>
     </div>
     <div class="msg err" id="buildMsg"></div>
-    <div id="rescue" style="display:none;flex-wrap:wrap;gap:10px;margin-top:14px;">
-      <button class="btn btn-sm" id="openTurbo">Abfrage in Overpass Turbo öffnen</button>
-      <button class="btn btn-sm" id="loadOsmBtn">Gespeicherte JSON-Daten laden</button>
-      <input type="file" id="osmFile" accept=".json,application/json,.geojson" hidden>
-    </div>
   </div>
 </section>
 
@@ -280,20 +288,20 @@
     <button class="iconbtn" id="viewBtn">Verfolger</button>
     <button class="iconbtn" id="lookReset">Blick vor</button>
     <div class="spacer"></div>
-    <div class="stat"><b id="statScore">0</b><small>Treffer</small></div>
-    <div class="stat"><b id="statRun">0</b><small>Serie</small></div>
-    <div class="stat"><b id="statLeft">0</b><small>offen</small></div>
+    <div id="nav">
+      <div id="arrow"><svg viewBox="0 0 24 24"><path d="M12 2 20 21 12 16 4 21Z" fill="#F2B705"/></svg></div>
+      <div id="navText"><span id="navDist">–</span><small id="navLabel">Nächster Stopp</small></div>
+    </div>
   </div>
 
   <div id="strip"></div>
 
-  <div id="card" class="hidden">
+  <div id="card">
     <p class="eyebrow" id="cardKicker">Stopp</p>
-    <p id="question"></p>
-    <div class="opts" id="opts"></div>
-    <div id="verdict">
-      <span id="verdictText"></span>
-      <button class="btn btn-primary btn-sm" id="next">Weiterfahren</button>
+    <p id="cardTitle"></p>
+    <div class="actions">
+      <button class="btn btn-primary btn-sm" id="delivered">Zugestellt</button>
+      <span class="eyebrow">Leertaste</span>
     </div>
   </div>
 
@@ -313,30 +321,36 @@
     <small>km/h</small>
     <div id="gear">P</div>
     <div id="curb">Bordstein</div>
-    <div id="dist"></div>
+    <div id="street"></div>
   </div>
 
-  <p id="credit">Kartendaten © OpenStreetMap-Mitwirkende (ODbL)</p>
+  <figure id="photo"><img id="photoImg" alt=""><figcaption id="photoCap"></figcaption></figure>
+
+  <p id="credit">Kartendaten © OpenStreetMap-Mitwirkende (ODbL) · Fotos © Mapillary-Nutzer, CC BY-SA 4.0</p>
   <div id="toast"></div>
 </section>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="lib/leaflet.js"
+        onerror="this.onerror=null;this.src='https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js'"></script>
+<script src="lib/three.min.js"
+        onerror="this.onerror=null;this.src='https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js'"></script>
 <script>
 /* ============================================================================
    KONFIGURATION
    ========================================================================== */
 
-const AREA_MARGIN_M = 160;    // Rand um das Rechteck der Stopps
-const AREA_WARN_KM2 = 4;      // ab hier warnen wir vor langer Ladezeit
+const DATA_URL      = "data/";
+const LOAD_R_M      = 1000;   // Kacheln bis zu diesem Abstand vom Auto laden
+const UNLOAD_R_M    = 1600;   // ab hier wieder entladen
+const TILE_CHECK_S  = 0.4;    // wie oft der Kachelbestand geprüft wird
 
 const MAX_SPEED_MS  = 16;     // ~58 km/h
 const REV_SPEED_MS  = 4.5;
 const ACCEL_MS2     = 7;
 const BRAKE_MS2     = 14;
 const ROLL_MS2      = 2.8;
-const TURN_DEG_S    = 95;     // Lenkgeschwindigkeit bei Fahrt
-const CAR_HALF_W    = 1.0;    // halbe Fahrzeugbreite für den Straßenrand
+const TURN_DEG_S    = 95;
+const CAR_HALF_W    = 1.0;
 const ARRIVE_M      = 12;
 
 const CHASE_BACK    = 7.2;
@@ -344,34 +358,24 @@ const CHASE_UP      = 3.0;
 const CHASE_LAG     = 5.0;
 const BIRD_UP       = 46;
 
-const OVERPASS = [
-  "https://overpass-api.de/api/interpreter",
-  "https://overpass.kumi.systems/api/interpreter",
-  "https://overpass.private.coffee/api/interpreter",
-  "https://overpass.osm.ch/api/interpreter",
-];
-
-const ROAD_WIDTH = {
-  primary:9, primary_link:7, secondary:8, secondary_link:6.5, tertiary:7, tertiary_link:6,
-  residential:6, unclassified:5.5, living_street:5.5, road:5.5,
-  service:4, track:3.5, pedestrian:4, footway:2.5, path:2.5, cycleway:2.5,
-};
+const PHOTO_NEAR_M  = 70;     // Fototafeln in dieser Nähe zeigen
+const PHOTO_PREVIEW_M = 28;   // Vorschaufenster, wenn ein Foto so nah und ähnlich gerichtet ist
+const PHOTO_MAX_TEX = 24;     // gleichzeitig geladene Texturen
 
 /* ============================================================================
    ZUSTAND
    ========================================================================== */
 
 const S = {
-  map:null, markers:[], points:[], seq:1,
-  origin:null,                       // {lat,lng} Nullpunkt der Weltkoordinaten
-  world:{roads:[], buildings:[], addresses:[]},
-  grid:new Map(), cell:40,
-  three:null,                        // {renderer,scene,camera}
-  car:null, cam:{yaw:0, pitch:0, pos:null}, view:0, ground:0,
-  stops:[], nextStop:0, score:0, run:0, answered:false,
-  mode:"quiz", running:false, paused:false, last:0, raf:null,
+  index:null, origin:null, cell:500,
+  tiles:new Map(),                   // key -> {status, data, group, segments, addresses}
+  photos:[], photoMeshes:new Map(),  // id -> mesh
+  map:null, mapLayer:null, points:[], seq:1, renderId:0,
+  three:null, car:null, cam:{yaw:0,pitch:0,pos:null}, view:0, ground:0,
+  stops:[], nextStop:0, mode:"free",
+  running:false, paused:false, last:0, raf:null, tileTimer:0, photoTimer:0,
   keys:{gas:false, brake:false, left:false, right:false},
-  lookDrag:null, curbT:0,
+  lookDrag:null, curbT:0, atStop:false,
 };
 
 const $ = (id)=>document.getElementById(id);
@@ -383,83 +387,199 @@ const RAD = Math.PI/180, DEG = 180/Math.PI;
 function angleDiff(a,b){ let d = norm(a) - norm(b); if (d > 180) d -= 360; if (d < -180) d += 360; return d; }
 
 /* ============================================================================
-   PROJEKTION – Kugelkoordinaten in flache Meter um den Nullpunkt
+   PROJEKTION – identisch zu tools/build_tiles.py
    ========================================================================== */
 
 const EARTH = 6378137;
+function project(lat, lng){
+  const o = S.origin;
+  return {x:(lng - o.lng) * RAD * EARTH * Math.cos(o.lat * RAD), z:-(lat - o.lat) * RAD * EARTH};
+}
+function unproject(x, z){
+  const o = S.origin;
+  return {lat:o.lat - z / (RAD * EARTH), lng:o.lng + x / (RAD * EARTH * Math.cos(o.lat * RAD))};
+}
+const tileKey = (x, z)=> Math.floor(x / S.cell) + "_" + Math.floor(z / S.cell);
 
-function project(lat, lng, origin){
-  const x = (lng - origin.lng) * RAD * EARTH * Math.cos(origin.lat * RAD);
-  const z = -(lat - origin.lat) * RAD * EARTH;      // -z ist Norden
-  return {x, z};
+/* ============================================================================
+   DATEN – Index, Kacheln, Fotos
+   ========================================================================== */
+
+async function fetchJson(url){
+  const r = await fetch(url);
+  if (!r.ok) throw new Error("HTTP " + r.status + " für " + url);
+  return r.json();
 }
-function unproject(x, z, origin){
-  return {
-    lat: origin.lat - (z / (RAD * EARTH)),
-    lng: origin.lng + (x / (RAD * EARTH * Math.cos(origin.lat * RAD))),
-  };
+
+/* Kachel lesen. Manche Server liefern .gz bereits entpackt aus, deshalb wird
+   an den ersten beiden Bytes erkannt, ob noch gzip vorliegt. */
+async function fetchGz(url){
+  const r = await fetch(url);
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  const buf = await r.arrayBuffer();
+  const head = new Uint8Array(buf, 0, 2);
+  if (head[0] === 0x1f && head[1] === 0x8b){
+    if (typeof DecompressionStream !== "function")
+      throw new Error("Dieser Browser kann keine gzip-Kacheln entpacken.");
+    const ds = new DecompressionStream("gzip");
+    const text = await new Response(new Blob([buf]).stream().pipeThrough(ds)).text();
+    return JSON.parse(text);
+  }
+  return JSON.parse(new TextDecoder().decode(buf));
 }
-function metersBetween(a, b){
-  const dLat = (b.lat - a.lat) * RAD * EARTH;
-  const dLng = (b.lng - a.lng) * RAD * EARTH * Math.cos(((a.lat + b.lat)/2) * RAD);
-  return Math.hypot(dLat, dLng);
+
+async function loadIndex(){
+  S.index = await fetchJson(DATA_URL + "index.json");
+  S.origin = S.index.origin;
+  S.cell = S.index.cell || 500;
+  try { S.photos = await fetchJson(DATA_URL + "photos.json"); } catch(_){ S.photos = []; }
+  $("areaTag").textContent = "Radius " + Math.round(S.index.radius_m/1000) + " km · " +
+    Object.keys(S.index.tiles).length + " Kacheln · " + S.photos.length + " Fotos";
+}
+
+/* Lädt eine Kachel genau einmal; gibt null zurück, wenn es sie nicht gibt. */
+function loadTile(key){
+  let t = S.tiles.get(key);
+  if (t) return t.promise;
+  if (!S.index.tiles[key]){
+    t = {status:"empty", data:null, promise:Promise.resolve(null)};
+    S.tiles.set(key, t); return t.promise;
+  }
+  t = {status:"loading", data:null};
+  t.promise = fetchGz(DATA_URL + "tiles/" + key + ".json.gz").then(d=>{
+    t.data = d; t.status = "ready";
+    t.segments = segmentsOf(d.roads);
+    return d;
+  }).catch(err=>{ t.status = "error"; t.error = err; return null; });
+  S.tiles.set(key, t);
+  return t.promise;
+}
+
+function segmentsOf(roads){
+  const segs = [];
+  roads.forEach(r=>{
+    for (let i = 0; i < r.p.length - 1; i++)
+      segs.push({ax:r.p[i][0], az:r.p[i][1], bx:r.p[i+1][0], bz:r.p[i+1][1], half:r.w/2, name:r.n || ""});
+  });
+  return segs;
+}
+
+/* Kacheln im Quadrat um einen Punkt, als Schlüsselliste */
+function keysAround(x, z, radius){
+  const keys = [];
+  const c = S.cell;
+  for (let ix = Math.floor((x - radius)/c); ix <= Math.floor((x + radius)/c); ix++)
+    for (let iz = Math.floor((z - radius)/c); iz <= Math.floor((z + radius)/c); iz++)
+      keys.push(ix + "_" + iz);
+  return keys;
 }
 
 /* ============================================================================
-   SCHRITT 1: KARTE (Leaflet + OpenStreetMap)
+   PLANER – Leaflet ohne Online-Kacheln, Straßen aus den eigenen Daten
    ========================================================================== */
 
 function initMap(){
   if (S.map){ S.map.invalidateSize(); return; }
+  S.map = L.map("map", {zoomControl:true, attributionControl:true, preferCanvas:true, minZoom:10, maxZoom:20})
+           .setView([S.origin.lat, S.origin.lng], 16);
+  S.map.attributionControl.setPrefix(false).addAttribution("© OpenStreetMap-Mitwirkende (ODbL)");
+  S.mapLayer = L.layerGroup().addTo(S.map);
 
-  S.map = L.map("map", {zoomControl:true, attributionControl:true})
-           .setView([51.16, 10.45], 6);
-
-  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom:19, attribution:"&copy; OpenStreetMap-Mitwirkende"
-  }).addTo(S.map);
+  // Gebietsgrenze
+  L.circle([S.origin.lat, S.origin.lng], {radius:S.index.radius_m, color:"#F2B705", weight:1,
+    fill:false, dashArray:"4 6", interactive:false}).addTo(S.map);
 
   S.map.on("click", (e)=> addPoint(e.latlng.lat, e.latlng.lng));
-
-  if (navigator.geolocation){
-    navigator.geolocation.getCurrentPosition(
-      p=>{ if (!S.points.length) S.map.setView([p.coords.latitude, p.coords.longitude], 17); },
-      ()=>{}, {timeout:6000});
-  }
+  S.map.on("moveend zoomend", renderVector);
+  renderVector();
   renderList();
+  refreshRouteSelect();
 }
+
+/* Meter pro Pixel bei der aktuellen Zoomstufe */
+function metersPerPixel(){
+  return 40075016.686 * Math.cos(S.origin.lat * RAD) / (256 * Math.pow(2, S.map.getZoom()));
+}
+
+async function renderVector(){
+  const id = ++S.renderId;
+  const z = S.map.getZoom();
+  S.mapLayer.clearLayers();
+  if (z < 15){ $("zoomHint").classList.add("on"); return; }
+  $("zoomHint").classList.remove("on");
+
+  const b = S.map.getBounds();
+  const a = project(b.getNorth(), b.getWest()), c = project(b.getSouth(), b.getEast());
+  const keys = [];
+  for (let ix = Math.floor(a.x/S.cell); ix <= Math.floor(c.x/S.cell); ix++)
+    for (let iz = Math.floor(a.z/S.cell); iz <= Math.floor(c.z/S.cell); iz++)
+      keys.push(ix + "_" + iz);
+  if (keys.length > 80) return;     // sollte bei z>=15 nicht vorkommen
+
+  const mpp = metersPerPixel();
+  const datas = await Promise.all(keys.map(loadTile));
+  if (id !== S.renderId) return;    // inzwischen wurde weiter geschoben
+
+  datas.forEach(d=>{
+    if (!d) return;
+    if (z >= 16) d.buildings.forEach(bd=>{
+      L.polygon(bd.p.map(p=>{ const ll = unproject(p[0], p[1]); return [ll.lat, ll.lng]; }),
+        {color:"#3A4350", weight:1, fillColor:"#262E39", fillOpacity:.9, interactive:false}).addTo(S.mapLayer);
+    });
+    d.roads.forEach(r=>{
+      const pts = r.p.map(p=>{ const ll = unproject(p[0], p[1]); return [ll.lat, ll.lng]; });
+      L.polyline(pts, {color:"#9AA4B2", weight:Math.max(1.2, r.w / mpp), opacity:.95,
+        lineCap:"round", lineJoin:"round", interactive:false}).addTo(S.mapLayer);
+    });
+    if (z >= 18) d.addresses.forEach(ad=>{
+      const ll = unproject(ad.x, ad.z);
+      L.marker([ll.lat, ll.lng], {interactive:false, icon:L.divIcon({className:"", iconSize:[0,0],
+        html:'<span style="font:10px/1 IBM Plex Mono,monospace;color:#8A93A0;white-space:nowrap;position:relative;left:-50%">' +
+             escapeHtml(ad.t.replace(/^.* /,"")) + '</span>'})}).addTo(S.mapLayer);
+    });
+  });
+}
+
+/* ---- Stopps ---- */
 
 function addPoint(lat, lng){
   const point = {id:S.seq++, label:"", lat, lng, marker:null};
-  point.marker = L.marker([lat, lng], {draggable:true, icon:pinIcon(S.points.length + 1)}).addTo(S.map);
-  point.marker.on("dragend", (e)=>{
-    const ll = e.target.getLatLng();
-    point.lat = ll.lat; point.lng = ll.lng; lookupLabel(point);
-  });
-  point.marker.on("click", ()=> removePoint(point.id));
+  attachMarker(point);
   S.points.push(point);
-  renderList();
+  renumber(); renderList();
   lookupLabel(point);
 }
 
-const pinIcon = (n)=> L.divIcon({className:"", html:'<div class="stopmark">'+n+'</div>',
+function attachMarker(point){
+  point.marker = L.marker([point.lat, point.lng], {draggable:true, icon:pinIcon(S.points.length + 1)}).addTo(S.map);
+  point.marker.on("dragend", (e)=>{
+    const ll = e.target.getLatLng();
+    point.lat = ll.lat; point.lng = ll.lng; point.label = ""; lookupLabel(point);
+  });
+  point.marker.on("click", ()=> removePoint(point.id));
+}
+
+const pinIcon = (n)=> L.divIcon({className:"", html:'<div class="stopmark' + (n === 1 ? " start" : "") + '">' + n + '</div>',
                                  iconSize:[24,24], iconAnchor:[12,12]});
 
-/* Rückwärtssuche über Nominatim, freiwillig und mit Rückfallname */
+/* Adresse offline aus den Kacheldaten: nächste Hausnummer im Umkreis von 60 m */
 async function lookupLabel(point){
-  if (!point.label) point.label = "Stopp " + point.id;
+  const i = S.points.indexOf(point);
+  if (!point.label) point.label = "Stopp " + (i + 1);
   renderList();
-  try {
-    const url = "https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&lat=" +
-                point.lat + "&lon=" + point.lng;
-    const r = await fetch(url, {headers:{"Accept-Language":"de"}});
-    if (!r.ok) return;
-    const d = await r.json();
-    const a = d.address || {};
-    const road = a.road || a.pedestrian || a.footway;
-    if (road) point.label = road + (a.house_number ? " " + a.house_number : "");
-    renderList();
-  } catch(_){ /* Name bleibt der Rückfallname */ }
+  const q = project(point.lat, point.lng);
+  const datas = await Promise.all(keysAround(q.x, q.z, 60).map(loadTile));
+  let best = null;
+  datas.forEach(d=>{ if (d) d.addresses.forEach(a=>{
+    const dist = Math.hypot(a.x - q.x, a.z - q.z);
+    if (dist < 60 && (!best || dist < best.dist)) best = {dist, text:a.t};
+  }); });
+  if (best) point.label = best.text;
+  else {
+    const near = nearestRoadAt(q.x, q.z, datas.flatMap(d=> d ? segmentsOf(d.roads) : []));
+    if (near && near.seg.name) point.label = near.seg.name;
+  }
+  renderList();
 }
 
 function removePoint(id){
@@ -480,11 +600,14 @@ const renumber = ()=> S.points.forEach((p,i)=> p.marker.setIcon(pinIcon(i+1)));
 
 function renderList(){
   const box = $("list");
-  if (!S.points.length){ box.innerHTML = '<p class="empty">Noch keine Stopps. Tipp auf die Karte.</p>'; return; }
+  if (!S.points.length){
+    box.innerHTML = '<p class="empty">Noch keine Stopps.<br>Tipp auf die Karte, um den Start zu setzen.</p>'; return;
+  }
   box.innerHTML = "";
   S.points.forEach((p,i)=>{
     const row = document.createElement("div");
     row.className = "row";
+    if (i === 0) row.style.borderLeftColor = "var(--ok)";
     const n = document.createElement("span");
     n.className = "n"; n.textContent = String(i+1).padStart(2,"0");
     const name = document.createElement("input");
@@ -504,9 +627,29 @@ function mini(text, fn){
   return b;
 }
 
+function setPoints(list){
+  S.points.forEach(p=>S.map.removeLayer(p.marker)); S.points = [];
+  list.forEach(s=>{
+    const point = {id:S.seq++, label:s.label || "", lat:+s.lat, lng:+s.lng, marker:null};
+    attachMarker(point); S.points.push(point);
+  });
+  renumber(); renderList();
+  if (S.points.length) S.map.fitBounds(S.points.map(p=>[p.lat, p.lng]), {padding:[40,40], maxZoom:17});
+}
+
+/* ---- Werkzeuge ---- */
+
+$("homeBtn").addEventListener("click", ()=> S.map.setView([S.origin.lat, S.origin.lng], 16));
+$("gpsBtn").addEventListener("click", ()=>{
+  if (!navigator.geolocation) return msg("planMsg", "Kein Standortdienst verfügbar.");
+  navigator.geolocation.getCurrentPosition(
+    p=> S.map.setView([p.coords.latitude, p.coords.longitude], 17),
+    ()=> msg("planMsg", "Standort nicht verfügbar. Ist die Berechtigung erteilt und GPS an?"),
+    {timeout:8000, enableHighAccuracy:true});
+});
+
 $("searchGo").addEventListener("click", doSearch);
 $("searchInput").addEventListener("keydown", e=>{ if (e.key === "Enter") doSearch(); });
-
 async function doSearch(){
   const q = $("searchInput").value.trim();
   if (!q) return;
@@ -517,341 +660,126 @@ async function doSearch(){
     const d = await r.json();
     if (!d.length) return msg("planMsg", "Nichts gefunden zu „" + q + "“.");
     S.map.setView([+d[0].lat, +d[0].lon], 17);
-  } catch { msg("planMsg", "Die Suche ist gerade nicht erreichbar. Zoom stattdessen von Hand."); }
+  } catch { msg("planMsg", "Die Suche braucht Internet. Schieb die Karte stattdessen von Hand."); }
 }
 
-$("clearRoute").addEventListener("click", ()=>{
-  S.points.forEach(p=>S.map.removeLayer(p.marker)); S.points = []; renderList();
-});
+$("clearRoute").addEventListener("click", ()=> setPoints([]));
+
+/* ---- Routen im Gerät ---- */
+
+const ROUTE_KEY = "gangfolge.routes";
+function readRoutes(){ try { return JSON.parse(localStorage.getItem(ROUTE_KEY) || "{}"); } catch { return {}; } }
+function writeRoutes(r){ localStorage.setItem(ROUTE_KEY, JSON.stringify(r)); }
+function refreshRouteSelect(){
+  const sel = $("routeSelect"); const cur = sel.value;
+  sel.innerHTML = '<option value="">Gespeicherte Routen</option>';
+  Object.keys(readRoutes()).sort().forEach(n=>{
+    const o = document.createElement("option"); o.value = n; o.textContent = n; sel.appendChild(o);
+  });
+  sel.value = cur;
+}
+const routeData = ()=> S.points.map(p=>({label:p.label, lat:+p.lat.toFixed(6), lng:+p.lng.toFixed(6)}));
 
 $("saveRoute").addEventListener("click", ()=>{
   if (!S.points.length) return msg("planMsg", "Erst Stopps setzen.");
-  const data = {version:3, saved:new Date().toISOString().slice(0,10),
-    stops:S.points.map(p=>({label:p.label, lat:+p.lat.toFixed(6), lng:+p.lng.toFixed(6)}))};
+  const name = $("routeName").value.trim() || $("routeSelect").value || ("Route " + new Date().toLocaleDateString("de-DE"));
+  const r = readRoutes(); r[name] = {saved:new Date().toISOString(), stops:routeData()}; writeRoutes(r);
+  refreshRouteSelect(); $("routeSelect").value = name; $("routeName").value = "";
+  msg("planMsg", "Gesichert als „" + name + "“ (" + S.points.length + " Stopps).");
+});
+$("loadRoute").addEventListener("click", ()=>{
+  const name = $("routeSelect").value; if (!name) return msg("planMsg", "Erst eine Route auswählen.");
+  const r = readRoutes()[name]; if (!r) return;
+  setPoints(r.stops); msg("planMsg", "„" + name + "“ geladen, " + r.stops.length + " Stopps.");
+});
+$("deleteRoute").addEventListener("click", ()=>{
+  const name = $("routeSelect").value; if (!name) return;
+  const r = readRoutes(); delete r[name]; writeRoutes(r); refreshRouteSelect();
+  msg("planMsg", "„" + name + "“ gelöscht.");
+});
+
+$("exportRoute").addEventListener("click", ()=>{
+  if (!S.points.length) return msg("planMsg", "Erst Stopps setzen.");
+  const data = {version:4, saved:new Date().toISOString().slice(0,10), stops:routeData()};
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([JSON.stringify(data,null,2)], {type:"application/json"}));
   a.download = "gangfolge-route.json"; a.click(); URL.revokeObjectURL(a.href);
-  msg("planMsg", "Gesichert als gangfolge-route.json.");
 });
-
-$("loadRouteBtn").addEventListener("click", ()=> $("routeFile").click());
+$("importRouteBtn").addEventListener("click", ()=> $("routeFile").click());
 $("routeFile").addEventListener("change", async (e)=>{
-  const file = e.target.files[0];
-  if (!file) return;
-  let data;
-  try { data = JSON.parse(await file.text()); }
-  catch { return msg("planMsg", "Die Datei ließ sich nicht lesen."); }
-  if (!data || !Array.isArray(data.stops) || !data.stops.length)
-    return msg("planMsg", "In der Datei stehen keine Stopps.");
-
-  S.points.forEach(p=>S.map.removeLayer(p.marker)); S.points = [];
-  data.stops.forEach(s=>{
-    const point = {id:S.seq++, label:s.label || "", lat:s.lat, lng:s.lng, marker:null};
-    point.marker = L.marker([s.lat, s.lng], {draggable:true, icon:pinIcon(S.points.length+1)}).addTo(S.map);
-    point.marker.on("dragend", (ev)=>{ const ll = ev.target.getLatLng(); point.lat = ll.lat; point.lng = ll.lng; });
-    point.marker.on("click", ()=> removePoint(point.id));
-    S.points.push(point);
-  });
-  S.map.fitBounds(S.points.map(p=>[p.lat, p.lng]), {padding:[40,40]});
-  renderList();
-  msg("planMsg", S.points.length + " Stopps geladen.");
+  const file = e.target.files[0]; if (!file) return;
+  try {
+    const data = JSON.parse(await file.text());
+    if (!Array.isArray(data.stops) || !data.stops.length) throw new Error();
+    setPoints(data.stops); msg("planMsg", S.points.length + " Stopps importiert.");
+  } catch { msg("planMsg", "Die Datei enthält keine Stopps."); }
+  e.target.value = "";
 });
 
 /* ============================================================================
-   SCHRITT 2: WELT BAUEN (Overpass -> Geometrie)
+   WELT LADEN UND STARTEN
    ========================================================================== */
 
-$("startTraining").addEventListener("click", ()=> buildWorld("quiz"));
-$("startRoam").addEventListener("click", ()=> buildWorld("roam"));
+$("startRoute").addEventListener("click", ()=> startWorld("route"));
+$("startFree").addEventListener("click", ()=> startWorld("free"));
 $("buildCancel").addEventListener("click", ()=>{ show("plan"); initMap(); });
 
-function logBuild(line){
-  $("buildLog").textContent = ($("buildLog").textContent + "\n" + line).trim();
-}
+function logBuild(line){ $("buildLog").textContent = ($("buildLog").textContent + "\n" + line).trim(); }
 
-async function buildWorld(mode){
+async function startWorld(mode){
   msg("planMsg","",false);
+  if (mode === "route" && S.points.length < 2)
+    return msg("planMsg", "Für eine Zustellung braucht es mindestens zwei Stopps: Start und ein Ziel.");
   S.mode = mode;
-  if (!S.points.length) return msg("planMsg", "Setz mindestens einen Stopp – der erste ist der Startpunkt.");
-  if (mode === "quiz" && S.points.length < 2) return msg("planMsg", "Für das Training braucht es mindestens zwei Stopps.");
+
+  S.stops = S.points.map((p,i)=>{ const q = project(p.lat, p.lng); return {label:p.label || ("Stopp " + (i+1)), x:q.x, z:q.z}; });
+  const start = S.stops.length ? S.stops[0] : {x:0, z:0, label:"Mitte"};
+  if (Math.hypot(start.x, start.z) > S.index.radius_m)
+    return msg("planMsg", "Der Start liegt außerhalb des Gebiets (" + Math.round(S.index.radius_m/1000) + " km um die Mitte).");
 
   show("build");
   msg("buildMsg","",false);
-  $("rescue").style.display = "none";
   $("buildLog").textContent = "";
-  $("buildBar").style.width = "6%";
+  $("buildBar").style.width = "8%";
 
-  const bbox = areaFor(S.points, AREA_MARGIN_M);
-  S.lastBbox = bbox;
-  const km2 = (metersBetween({lat:bbox.s, lng:bbox.w}, {lat:bbox.s, lng:bbox.e}) *
-               metersBetween({lat:bbox.s, lng:bbox.w}, {lat:bbox.n, lng:bbox.w})) / 1e6;
-  logBuild("Gebiet: " + km2.toFixed(2) + " km²");
-  if (km2 > AREA_WARN_KM2) logBuild("Das ist groß – das Laden kann eine Minute dauern.");
-
-  let json;
   try {
-    json = await overpass(bbox);
-  } catch (err) {
-    const hint = environmentHint();
-    msg("buildMsg", err.message + "\n\n" + (err.notes || []).join("\n") +
-        (hint ? "\n\n" + hint : "") +
-        "\n\nWenn der Dienst nur überlastet ist, hilft ein Versuch in ein bis zwei Minuten.");
-    $("buildMsg").style.whiteSpace = "pre-line";
-    $("rescue").style.display = "flex";
+    if (!S.three) buildScene();
+    const keys = keysAround(start.x, start.z, LOAD_R_M);
+    let done = 0;
+    await Promise.all(keys.map(k=> loadTile(k).then(()=>{
+      done++; $("buildBar").style.width = (8 + 82 * done / keys.length) + "%";
+    })));
+    const errors = keys.filter(k=> S.tiles.get(k).status === "error");
+    if (errors.length === keys.length){
+      const err = S.tiles.get(errors[0]).error;
+      throw new Error("Keine Kachel ließ sich laden: " + (err ? err.message : "unbekannt"));
+    }
+    keys.forEach(mountTile);
+    const loaded = keys.filter(k=> S.tiles.get(k).status === "ready").length;
+    logBuild(loaded + " Kacheln geladen" + (errors.length ? ", " + errors.length + " fehlerhaft" : ""));
+    if (!loaded) throw new Error("Rund um den Start gibt es keine Daten. Setz den Start auf eine Straße im Gebiet.");
+  } catch (err){
+    msg("buildMsg", err.message);
     return;
   }
-  finishWorld(json, bbox);
-}
-
-/* Baut die Welt aus einer Overpass-Antwort – egal ob sie aus dem Netz kam
-   oder aus einer von Hand geladenen Datei. */
-function finishWorld(json, bbox){
-  $("buildBar").style.width = "55%";
-
-  S.origin = {lat:(bbox.n + bbox.s)/2, lng:(bbox.e + bbox.w)/2};
-  const w = parseOSM(json, S.origin);
-  S.world = w;
-  logBuild(w.roads.length + " Straßenzüge, " + w.buildings.length + " Gebäude, " + w.addresses.length + " Hausnummern");
-
-  if (!w.roads.length)
-    return msg("buildMsg", "In diesem Gebiet sind keine Straßen erfasst. Setz die Stopps an eine kartierte Straße.");
-
-  buildGrid(w.roads);
-  $("buildBar").style.width = "72%";
-
-  logBuild("Baue Geometrie…");
-  setTimeout(()=>{
-    buildScene(w);
-    $("buildBar").style.width = "100%";
-
-    S.stops = S.points.map((p,i)=>{
-      const q = project(p.lat, p.lng, S.origin);
-      return {label:p.label || ("Stopp " + (i+1)), x:q.x, z:q.z};
-    });
-
-    show("game");
-    startDrive();
-  }, 30);
-}
-
-/* Ersatzweg: Abfrage in Overpass Turbo öffnen, Ergebnis als Datei speichern,
-   hier wieder einlesen. Funktioniert auch, wenn die Umgebung fetch blockt. */
-$("openTurbo").addEventListener("click", ()=>{
-  if (!S.lastQuery) return;
-  const url = "https://overpass-turbo.eu/?Q=" + encodeURIComponent(S.lastQuery) + "&R";
-  window.open(url, "_blank", "noopener");
-  logBuild("Overpass Turbo geöffnet. Dort auf Ausführen, dann Export → Rohdaten als JSON speichern und hier laden.");
-});
-
-$("loadOsmBtn").addEventListener("click", ()=> $("osmFile").click());
-$("osmFile").addEventListener("change", async (e)=>{
-  const file = e.target.files[0];
-  if (!file || !S.lastBbox) return;
-  msg("buildMsg","",false);
-  try {
-    const json = JSON.parse(await file.text());
-    if (!json.elements) throw new Error("keine elements-Liste");
-    logBuild("Datei gelesen: " + json.elements.length + " Objekte");
-    $("rescue").style.display = "none";
-    finishWorld(json, S.lastBbox);
-  } catch (err){
-    msg("buildMsg", "Die Datei ließ sich nicht auswerten (" + err.message +
-        "). Erwartet wird der JSON-Rohexport aus Overpass Turbo.");
-  }
-});
-
-function areaFor(points, margin){
-  let n = -90, s = 90, e = -180, w = 180;
-  points.forEach(p=>{ n = Math.max(n, p.lat); s = Math.min(s, p.lat); e = Math.max(e, p.lng); w = Math.min(w, p.lng); });
-  const latPad = margin / 111320;
-  const lngPad = margin / (111320 * Math.cos(((n+s)/2) * RAD));
-  return {n:n + latPad, s:s - latPad, e:e + lngPad, w:w - lngPad};
-}
-
-function overpassQuery(b){
-  const box = [b.s, b.w, b.n, b.e].map(v=>v.toFixed(6)).join(",");
-  return "[out:json][timeout:90];(" +
-    'way["highway"]["highway"!~"^(motorway|motorway_link|trunk|trunk_link|proposed|construction|steps|elevator|corridor|platform)$"]["area"!~"yes"](' + box + ");" +
-    'way["building"](' + box + ");" +
-    'node["addr:housenumber"](' + box + ");" +
-    ");out geom;";
-}
-
-/* Umgebung erkennen – die häufigste Ursache für "nicht erreichbar" ist nicht
-   der Server, sondern die Umgebung, in der die Datei läuft. */
-function environment(){
-  const framed = (window.self !== window.top);
-  const proto  = location.protocol;
-  const local  = proto === "file:";
-  const opaque = proto === "content:" || proto === "blob:" || proto === "data:";
-  return {framed, local, opaque, proto};
-}
-
-function environmentHint(){
-  const e = environment();
-  if (e.opaque)
-    return "Diese Seite läuft über " + e.proto + " – so öffnet Android eine Datei direkt aus dem Download-Ordner. Aus einem solchen Dokument blockiert der Browser jede Anfrage an fremde Server, unabhängig vom Server. Die App braucht eine echte Web-Adresse: leg die Datei auf einen Webspace oder GitHub Pages, oder starte auf einem Rechner im selben WLAN  python3 -m http.server  im Ordner der Datei und ruf sie vom Handy über http://RECHNER-IP:8000/gangfolge-sim.html auf. Ersatzweise lässt sich die Welt über die beiden Schaltflächen unten aus einer gespeicherten Datei bauen.";
-  if (e.framed)
-    return "Diese Seite läuft in einem eingebetteten Rahmen (Vorschau). Solche Rahmen blocken ausgehende Anfragen an fremde Server. Lade die Datei herunter und öffne sie direkt im Browser.";
-  if (e.local)
-    return "Die Datei läuft über file://. Die meisten Browser erlauben das, Safari und manche Firefox-Einstellungen blocken dabei aber Anfragen an fremde Server. Falls es hier scheitert, leg die Datei auf einen kleinen lokalen Server, zum Beispiel mit  python3 -m http.server  im selben Ordner, und öffne dann http://localhost:8000/gangfolge-sim.html";
-  return "";
-}
-
-async function overpass(bbox){
-  const query = overpassQuery(bbox);
-  S.lastQuery = query;
-  const body = "data=" + encodeURIComponent(query);
-  const notes = [];
-
-  for (const url of OVERPASS){
-    const host = new URL(url).host;
-    for (const method of ["POST","GET"]){
-      try {
-        logBuild("Versuche " + host + " (" + method + ")…");
-        const r = method === "POST"
-          ? await fetch(url, {method:"POST",
-              headers:{"Content-Type":"application/x-www-form-urlencoded"}, body})
-          : await fetch(url + "?" + body);
-
-        if (!r.ok){
-          const text = (await r.text()).slice(0, 200).replace(/\s+/g," ");
-          notes.push(host + " " + method + ": HTTP " + r.status + (text ? " – " + text : ""));
-          logBuild("  abgelehnt: HTTP " + r.status);
-          continue;
-        }
-        const json = await r.json();
-        logBuild("  Antwort erhalten: " + (json.elements ? json.elements.length : 0) + " Objekte");
-        return json;
-      } catch (err){
-        const kind = (err instanceof TypeError)
-          ? "Verbindung blockiert oder unterbrochen (CORS oder Netzwerk)"
-          : err.message;
-        notes.push(host + " " + method + ": " + kind);
-        logBuild("  " + kind);
-      }
-    }
-  }
-
-  const e = new Error("Kein Overpass-Server hat geantwortet.");
-  e.notes = notes;
-  throw e;
-}
-
-/* Wandelt die Overpass-Antwort in flache Weltkoordinaten um. */
-function parseOSM(json, origin){
-  const roads = [], buildings = [], addresses = [];
-
-  for (const el of (json.elements || [])){
-    const tags = el.tags || {};
-
-    if (el.type === "way" && tags.highway && Array.isArray(el.geometry)){
-      const pts = el.geometry.map(g=>project(g.lat, g.lon, origin));
-      if (pts.length < 2) continue;
-      roads.push({
-        name: tags.name || "",
-        width: ROAD_WIDTH[tags.highway] || 5,
-        oneway: tags.oneway === "yes",
-        pts,
-      });
-      continue;
-    }
-
-    if (el.type === "way" && tags.building && Array.isArray(el.geometry)){
-      const pts = el.geometry.map(g=>project(g.lat, g.lon, origin));
-      if (pts.length < 4) continue;
-      const levels = parseFloat(tags["building:levels"]);
-      const h = parseFloat(tags.height);
-      buildings.push({
-        pts,
-        height: h || (levels ? levels * 3.2 + 1.2 : (tags.building === "garage" || tags.building === "shed" ? 3 : 8)),
-      });
-      if (tags["addr:housenumber"]){
-        const c = centroid(pts);
-        addresses.push({x:c.x, z:c.z,
-          text:(tags["addr:street"] ? tags["addr:street"] + " " : "") + tags["addr:housenumber"]});
-      }
-      continue;
-    }
-
-    if (el.type === "node" && tags["addr:housenumber"] && el.lat != null){
-      const p = project(el.lat, el.lon, origin);
-      addresses.push({x:p.x, z:p.z,
-        text:(tags["addr:street"] ? tags["addr:street"] + " " : "") + tags["addr:housenumber"]});
-    }
-  }
-  return {roads, buildings, addresses};
-}
-
-function centroid(pts){
-  let x = 0, z = 0;
-  for (const p of pts){ x += p.x; z += p.z; }
-  return {x:x/pts.length, z:z/pts.length};
-}
-
-/* ---- Raster über alle Straßensegmente, für die Randprüfung beim Fahren ---- */
-
-function buildGrid(roads){
-  S.grid = new Map();
-  S.segments = [];
-  roads.forEach(r=>{
-    for (let i = 0; i < r.pts.length - 1; i++){
-      const seg = {ax:r.pts[i].x, az:r.pts[i].z, bx:r.pts[i+1].x, bz:r.pts[i+1].z,
-                   half:r.width/2, name:r.name};
-      const idx = S.segments.push(seg) - 1;
-      const minx = Math.min(seg.ax, seg.bx), maxx = Math.max(seg.ax, seg.bx);
-      const minz = Math.min(seg.az, seg.bz), maxz = Math.max(seg.az, seg.bz);
-      for (let cx = Math.floor(minx/S.cell); cx <= Math.floor(maxx/S.cell); cx++)
-        for (let cz = Math.floor(minz/S.cell); cz <= Math.floor(maxz/S.cell); cz++){
-          const key = cx + "," + cz;
-          if (!S.grid.has(key)) S.grid.set(key, []);
-          S.grid.get(key).push(idx);
-        }
-    }
-  });
-}
-
-/* Nächster Punkt auf einem Segment und Abstand dorthin */
-function closestOnSegment(px, pz, s){
-  const dx = s.bx - s.ax, dz = s.bz - s.az;
-  const l2 = dx*dx + dz*dz;
-  let t = l2 ? ((px - s.ax)*dx + (pz - s.az)*dz) / l2 : 0;
-  t = clamp(t, 0, 1);
-  const cx = s.ax + t*dx, cz = s.az + t*dz;
-  return {x:cx, z:cz, d:Math.hypot(px - cx, pz - cz)};
-}
-
-/* Sucht die Straße, auf der wir am ehesten stehen. */
-function nearestRoad(px, pz){
-  const cx = Math.floor(px/S.cell), cz = Math.floor(pz/S.cell);
-  let best = null;
-  for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++){
-    const list = S.grid.get((cx+i) + "," + (cz+j));
-    if (!list) continue;
-    for (const idx of list){
-      const s = S.segments[idx];
-      const c = closestOnSegment(px, pz, s);
-      const slack = c.d - s.half;                 // wie weit über den Rand hinaus
-      if (!best || slack < best.slack) best = {slack, seg:s, ...c};
-    }
-  }
-  return best;
+  $("buildBar").style.width = "100%";
+  show("game");
+  startDrive(start);
 }
 
 /* ============================================================================
-   SZENE
+   SZENE UND KACHEL-MESHES
    ========================================================================== */
 
-function buildScene(w){
+function buildScene(){
   const canvas = $("world");
-  const renderer = new THREE.WebGLRenderer({canvas, antialias:true});
+  const renderer = new THREE.WebGLRenderer({canvas, antialias:true, powerPreference:"high-performance"});
   renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
   renderer.setSize(window.innerWidth, window.innerHeight, false);
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x8FA6B8);
-  scene.fog = new THREE.Fog(0x8FA6B8, 120, 460);
-
+  scene.fog = new THREE.Fog(0x8FA6B8, 140, 520);
   const camera = new THREE.PerspectiveCamera(62, window.innerWidth/window.innerHeight, 0.5, 900);
 
   scene.add(new THREE.HemisphereLight(0xBFD4E4, 0x4A4E42, 0.95));
@@ -859,160 +787,281 @@ function buildScene(w){
   sun.position.set(120, 220, -90);
   scene.add(sun);
 
-  // Boden
-  const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(4000, 4000),
-    new THREE.MeshLambertMaterial({color:0x5F6B4B}));
-  ground.rotation.x = -Math.PI/2;
-  ground.position.y = -0.06;
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(2400, 2400), new THREE.MeshLambertMaterial({color:0x5F6B4B}));
+  ground.rotation.x = -Math.PI/2; ground.position.y = -0.06;
   scene.add(ground);
-
-  // Straßen als Bänder, an den Enden verlängert, damit an Ecken keine Lücke bleibt
-  scene.add(roadMesh(w.roads, 0.02, 0, 0x2C3038));      // Asphalt
-  scene.add(roadMesh(w.roads, 0.0, 1.1, 0x6E6A60));     // Bordsteinrand darunter
-
-  // Gebäude
-  if (w.buildings.length) scene.add(buildingMesh(w.buildings));
-
-  // Briefkästen an Hausnummern
-  if (w.addresses.length) scene.add(addressMesh(w.addresses));
-
-  // Stopp-Säulen
-  const stopGroup = new THREE.Group();
-  S.points.forEach(p=>{
-    const q = project(p.lat, p.lng, S.origin);
-    const m = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.5, 0.5, 7, 10),
-      new THREE.MeshLambertMaterial({color:0xF2B705, transparent:true, opacity:0.75}));
-    m.position.set(q.x, 3.5, q.z);
-    stopGroup.add(m);
-  });
-  scene.add(stopGroup);
 
   // Fahrzeug
   const car = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.BoxGeometry(2.0, 1.15, 4.6),
-    new THREE.MeshLambertMaterial({color:0xE8E4DA}));
+  const body = new THREE.Mesh(new THREE.BoxGeometry(2.0, 1.15, 4.6), new THREE.MeshLambertMaterial({color:0xE8E4DA}));
   body.position.y = 0.95;
-  const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.85, 1.0, 2.2),
-    new THREE.MeshLambertMaterial({color:0x1B2029}));
+  const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.85, 1.0, 2.2), new THREE.MeshLambertMaterial({color:0x1B2029}));
   cabin.position.set(0, 1.85, 0.35);
-  const stripe = new THREE.Mesh(new THREE.BoxGeometry(2.04, 0.28, 4.0),
-    new THREE.MeshLambertMaterial({color:0xF2B705}));
+  const stripe = new THREE.Mesh(new THREE.BoxGeometry(2.04, 0.28, 4.0), new THREE.MeshLambertMaterial({color:0xF2B705}));
   stripe.position.y = 1.05;
   car.add(body, cabin, stripe);
+  const wheelGeo = new THREE.CylinderGeometry(0.42, 0.42, 0.3, 12), wheelMat = new THREE.MeshLambertMaterial({color:0x101318});
   [[-0.95,-1.5],[0.95,-1.5],[-0.95,1.5],[0.95,1.5]].forEach(([wx,wz])=>{
-    const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.3, 12),
-      new THREE.MeshLambertMaterial({color:0x101318}));
-    wheel.rotation.z = Math.PI/2;
-    wheel.position.set(wx, 0.42, wz);
-    car.add(wheel);
+    const wheel = new THREE.Mesh(wheelGeo, wheelMat);
+    wheel.rotation.z = Math.PI/2; wheel.position.set(wx, 0.42, wz); car.add(wheel);
   });
   scene.add(car);
 
-  S.three = {renderer, scene, camera, car};
+  const stopGroup = new THREE.Group(); scene.add(stopGroup);
+  const photoGroup = new THREE.Group(); scene.add(photoGroup);
+
+  S.three = {renderer, scene, camera, car, ground, stopGroup, photoGroup,
+    mats:{
+      asphalt:new THREE.MeshLambertMaterial({color:0x2C3038, side:THREE.DoubleSide}),
+      curb:new THREE.MeshLambertMaterial({color:0x6E6A60, side:THREE.DoubleSide}),
+      building:new THREE.MeshLambertMaterial({vertexColors:true}),
+      post:new THREE.MeshLambertMaterial({color:0x3A3F49}),
+      box:new THREE.MeshLambertMaterial({color:0xF2B705}),
+      stop:new THREE.MeshLambertMaterial({color:0xF2B705, transparent:true, opacity:0.75}),
+      stopDone:new THREE.MeshLambertMaterial({color:0x5FA777, transparent:true, opacity:0.45}),
+    }};
 
   window.addEventListener("resize", ()=>{
-    if (!S.three) return;
     S.three.camera.aspect = window.innerWidth/window.innerHeight;
     S.three.camera.updateProjectionMatrix();
     S.three.renderer.setSize(window.innerWidth, window.innerHeight, false);
   });
 }
 
-/* Ein einziges Mesh für alle Straßen – schnell genug für tausende Segmente. */
-function roadMesh(roads, y, widen, color){
+/* Kachel in die Szene hängen (falls geladen und noch nicht drin) */
+function mountTile(key){
+  const t = S.tiles.get(key);
+  if (!t || t.status !== "ready" || t.group) return;
+  const d = t.data, m = S.three.mats;
+  const g = new THREE.Group();
+  if (d.roads.length){
+    g.add(new THREE.Mesh(roadGeometry(d.roads, 0.02, 0), m.asphalt));
+    g.add(new THREE.Mesh(roadGeometry(d.roads, 0.0, 1.1), m.curb));
+  }
+  if (d.buildings.length) g.add(new THREE.Mesh(buildingGeometry(d.buildings), m.building));
+  if (d.addresses.length){
+    g.add(new THREE.Mesh(boxesGeometry(d.addresses, 0.16, 1.1, 0.16, 0.55), m.post));
+    g.add(new THREE.Mesh(boxesGeometry(d.addresses, 0.5, 0.36, 0.34, 1.25), m.box));
+  }
+  S.three.scene.add(g);
+  t.group = g;
+}
+
+function unmountTile(key){
+  const t = S.tiles.get(key);
+  if (!t || !t.group) return;
+  S.three.scene.remove(t.group);
+  t.group.traverse(o=>{ if (o.geometry) o.geometry.dispose(); });
+  t.group = null;
+}
+
+/* Kachelbestand um das Auto pflegen */
+function updateTiles(){
+  const c = S.car;
+  keysAround(c.x, c.z, LOAD_R_M).forEach(k=>{
+    const t = S.tiles.get(k);
+    if (!t) loadTile(k).then(()=>{ if (S.running) mountTile(k); });
+    else if (t.status === "ready" && !t.group) mountTile(k);
+  });
+  S.tiles.forEach((t, k)=>{
+    if (!t.group) return;
+    const [ix, iz] = k.split("_").map(Number);
+    const cx = (ix + 0.5) * S.cell, cz = (iz + 0.5) * S.cell;
+    if (Math.hypot(cx - c.x, cz - c.z) > UNLOAD_R_M + S.cell) unmountTile(k);
+  });
+}
+
+function roadGeometry(roads, y, widen){
   const pos = [];
   roads.forEach(r=>{
-    const half = r.width/2 + widen;
-    for (let i = 0; i < r.pts.length - 1; i++){
-      const a = r.pts[i], b = r.pts[i+1];
-      const dx = b.x - a.x, dz = b.z - a.z;
+    const half = r.w/2 + widen;
+    for (let i = 0; i < r.p.length - 1; i++){
+      const a = r.p[i], b = r.p[i+1];
+      const dx = b[0] - a[0], dz = b[1] - a[1];
       const len = Math.hypot(dx, dz) || 1;
-      const ux = dx/len, uz = dz/len;          // Richtung
-      const nx = -uz, nz = ux;                 // Normale
-      const ex = ux*half, ez = uz*half;        // Enden verlängern
-      const ax = a.x - ex, az = a.z - ez, bx = b.x + ex, bz = b.z + ez;
-      const p1 = [ax + nx*half, y, az + nz*half];
-      const p2 = [bx + nx*half, y, bz + nz*half];
-      const p3 = [bx - nx*half, y, bz - nz*half];
-      const p4 = [ax - nx*half, y, az - nz*half];
-      pos.push(...p1, ...p2, ...p3, ...p1, ...p3, ...p4);
+      const ux = dx/len, uz = dz/len, nx = -uz, nz = ux;
+      const ex = ux*half, ez = uz*half;
+      const ax = a[0] - ex, az = a[1] - ez, bx = b[0] + ex, bz = b[1] + ez;
+      pos.push(ax + nx*half, y, az + nz*half,  bx + nx*half, y, bz + nz*half,  bx - nx*half, y, bz - nz*half,
+               ax + nx*half, y, az + nz*half,  bx - nx*half, y, bz - nz*half,  ax - nx*half, y, az - nz*half);
     }
   });
   const g = new THREE.BufferGeometry();
   g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
   g.computeVertexNormals();
-  return new THREE.Mesh(g, new THREE.MeshLambertMaterial({color, side:THREE.DoubleSide}));
+  return g;
 }
 
-function buildingMesh(buildings){
-  const group = new THREE.Group();
-  const mat = new THREE.MeshLambertMaterial({color:0xB9AE9C});
-  const roof = new THREE.MeshLambertMaterial({color:0x8A7F70});
-
+/* Alle Gebäude einer Kachel in einem Mesh: Wände als Rechtecke, Dach trianguliert. */
+function buildingGeometry(buildings){
+  const pos = [], col = [];
+  const wall = [0.73, 0.68, 0.61], roof = [0.54, 0.50, 0.44];
+  const push = (x,y,z,c)=>{ pos.push(x,y,z); col.push(c[0],c[1],c[2]); };
   buildings.forEach(b=>{
-    // Grundriss in der XY-Ebene aufbauen, z gespiegelt – nach der Drehung um
-    // -90 Grad um X steht er wieder richtig herum und wächst nach oben.
-    const shape = new THREE.Shape();
-    b.pts.forEach((p,i)=> i ? shape.lineTo(p.x, -p.z) : shape.moveTo(p.x, -p.z));
-    let geo;
-    try {
-      geo = new THREE.ExtrudeGeometry(shape, {depth:b.height, bevelEnabled:false});
-    } catch(_) { return; }
-    geo.rotateX(-Math.PI/2);
-    const mesh = new THREE.Mesh(geo, [roof, mat]);   // 0 = Deckel, 1 = Wände
-    group.add(mesh);
+    let p = b.p; const h = b.h, n = p.length;
+    // Umlaufsinn vereinheitlichen, damit Wände nach außen und Dächer nach oben zeigen
+    let area = 0;
+    for (let i = 0; i < n; i++){ const a = p[i], c = p[(i+1) % n]; area += a[0]*c[1] - c[0]*a[1]; }
+    if (area > 0) p = p.slice().reverse();
+    for (let i = 0; i < n; i++){
+      const a = p[i], c = p[(i+1) % n];
+      push(a[0],0,a[1],wall); push(c[0],0,c[1],wall); push(c[0],h,c[1],wall);
+      push(a[0],0,a[1],wall); push(c[0],h,c[1],wall); push(a[0],h,a[1],wall);
+    }
+    let tris;
+    try { tris = THREE.ShapeUtils.triangulateShape(p.map(q=> new THREE.Vector2(q[0], -q[1])), []); }
+    catch(_) { tris = []; }
+    tris.forEach(t=>{ push(p[t[0]][0],h,p[t[0]][1],roof); push(p[t[1]][0],h,p[t[1]][1],roof); push(p[t[2]][0],h,p[t[2]][1],roof); });
   });
-  return group;
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+  g.computeVertexNormals();
+  return g;
 }
 
-function addressMesh(addresses){
-  const group = new THREE.Group();
-  const post = new THREE.BoxGeometry(0.16, 1.1, 0.16);
-  const box  = new THREE.BoxGeometry(0.5, 0.36, 0.34);
-  const mPost = new THREE.MeshLambertMaterial({color:0x3A3F49});
-  const mBox  = new THREE.MeshLambertMaterial({color:0xF2B705});
-  addresses.forEach(a=>{
-    const p = new THREE.Mesh(post, mPost);
-    p.position.set(a.x, 0.55, a.z);
-    const b = new THREE.Mesh(box, mBox);
-    b.position.set(a.x, 1.25, a.z);
-    group.add(p, b);
+/* Viele gleiche Quader (Briefkästen) in einem Mesh */
+function boxesGeometry(items, w, h, d, yCenter){
+  const pos = [];
+  const hw = w/2, hh = h/2, hd = d/2;
+  const faces = [
+    [[-1,-1, 1],[ 1,-1, 1],[ 1, 1, 1],[-1, 1, 1]], [[ 1,-1,-1],[-1,-1,-1],[-1, 1,-1],[ 1, 1,-1]],
+    [[ 1,-1, 1],[ 1,-1,-1],[ 1, 1,-1],[ 1, 1, 1]], [[-1,-1,-1],[-1,-1, 1],[-1, 1, 1],[-1, 1,-1]],
+    [[-1, 1, 1],[ 1, 1, 1],[ 1, 1,-1],[-1, 1,-1]],
+  ];
+  items.forEach(it=>{
+    faces.forEach(f=>{
+      const v = f.map(([sx,sy,sz])=> [it.x + sx*hw, yCenter + sy*hh, it.z + sz*hd]);
+      pos.push(...v[0], ...v[1], ...v[2], ...v[0], ...v[2], ...v[3]);
+    });
   });
-  return group;
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  g.computeVertexNormals();
+  return g;
+}
+
+function buildStopMarkers(){
+  const grp = S.three.stopGroup;
+  while (grp.children.length) grp.remove(grp.children[0]);
+  const geo = new THREE.CylinderGeometry(0.5, 0.5, 7, 10);
+  S.stops.forEach((s, i)=>{
+    const m = new THREE.Mesh(geo, i === 0 ? S.three.mats.stopDone : S.three.mats.stop);
+    m.position.set(s.x, 3.5, s.z); s.mesh = m; grp.add(m);
+  });
 }
 
 /* ============================================================================
-   SCHRITT 3: FAHREN
+   FOTOS – Tafeln in der Welt und Vorschaufenster
    ========================================================================== */
 
-function startDrive(){
-  const start = S.stops[0];
+const texLoader = (typeof THREE !== "undefined") ? new THREE.TextureLoader() : null;
+
+function updatePhotos(){
+  if (!S.photos.length) return;
+  const c = S.car, grp = S.three.photoGroup;
+  const near = S.photos.filter(p=> Math.hypot(p.x - c.x, p.z - c.z) < PHOTO_NEAR_M);
+
+  // ferne Tafeln entfernen
+  S.photoMeshes.forEach((mesh, id)=>{
+    if (Math.hypot(mesh.position.x - c.x, mesh.position.z - c.z) > PHOTO_NEAR_M + 20){
+      grp.remove(mesh); if (mesh.material.map) mesh.material.map.dispose(); mesh.material.dispose();
+      S.photoMeshes.delete(id);
+    }
+  });
+  // neue Tafeln, begrenzt
+  for (const p of near){
+    if (S.photoMeshes.size >= PHOTO_MAX_TEX) break;
+    if (S.photoMeshes.has(p.id)) continue;
+    const tex = texLoader.load(DATA_URL + "photos/" + p.f);
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(4.8, 3.6),
+      new THREE.MeshBasicMaterial({map:tex, side:THREE.DoubleSide, transparent:true, opacity:0.92}));
+    // rechts neben der Aufnahmeposition, Blickrichtung des Fotos
+    const h = p.h * RAD;
+    mesh.position.set(p.x + Math.cos(h) * 4.5, 2.4, p.z + Math.sin(h) * 4.5);
+    mesh.rotation.y = -h - Math.PI/2;
+    S.photoMeshes.set(p.id, mesh); grp.add(mesh);
+  }
+
+  // Vorschaufenster: nächstes Foto mit ähnlicher Blickrichtung
+  let best = null;
+  for (const p of near){
+    const d = Math.hypot(p.x - c.x, p.z - c.z);
+    if (d > PHOTO_PREVIEW_M || Math.abs(angleDiff(p.h, c.heading)) > 50) continue;
+    if (!best || d < best.d) best = {d, p};
+  }
+  const fig = $("photo");
+  if (best){
+    if ($("photoImg").dataset.id !== best.p.id){
+      $("photoImg").src = DATA_URL + "photos/" + best.p.f; $("photoImg").dataset.id = best.p.id;
+      $("photoCap").textContent = "Foto: " + best.p.u + (best.p.d ? " · " + best.p.d : "") + " · CC BY-SA";
+    }
+    fig.classList.add("on");
+  } else fig.classList.remove("on");
+}
+
+/* ============================================================================
+   FAHREN
+   ========================================================================== */
+
+function nearestRoadAt(px, pz, segments){
+  let best = null;
+  for (const s of segments){
+    const dx = s.bx - s.ax, dz = s.bz - s.az, l2 = dx*dx + dz*dz;
+    let t = l2 ? ((px - s.ax)*dx + (pz - s.az)*dz) / l2 : 0;
+    t = clamp(t, 0, 1);
+    const cx = s.ax + t*dx, cz = s.az + t*dz, d = Math.hypot(px - cx, pz - cz);
+    const slack = d - s.half;
+    if (!best || slack < best.slack) best = {slack, seg:s, x:cx, z:cz, d};
+  }
+  return best;
+}
+
+/* Straßensegmente der Kachel und ihrer acht Nachbarn */
+function nearestRoad(px, pz){
+  const ix = Math.floor(px/S.cell), iz = Math.floor(pz/S.cell);
+  let best = null;
+  for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++){
+    const t = S.tiles.get((ix+i) + "_" + (iz+j));
+    if (!t || t.status !== "ready") continue;
+    const b = nearestRoadAt(px, pz, t.segments);
+    if (b && (!best || b.slack < best.slack)) best = b;
+  }
+  return best;
+}
+
+function startDrive(start){
   const near = nearestRoad(start.x, start.z);
   const px = near ? near.x : start.x, pz = near ? near.z : start.z;
   const seg = near ? near.seg : null;
-  const heading = seg ? Math.atan2(seg.bx - seg.ax, -(seg.bz - seg.az)) * DEG : 0;
+  let heading = seg ? Math.atan2(seg.bx - seg.ax, -(seg.bz - seg.az)) * DEG : 0;
+  // bei einer Route in Richtung des nächsten Stopps losfahren
+  if (seg && S.stops.length > 1){
+    const n = S.stops[1], want = Math.atan2(n.x - px, -(n.z - pz)) * DEG;
+    if (Math.abs(angleDiff(heading, want)) > 90) heading += 180;
+  }
 
   S.car = {x:px, z:pz, heading:norm(heading), speed:0};
   S.cam = {yaw:0, pitch:0, pos:new THREE.Vector3(px, CHASE_UP, pz)};
-  S.view = 0; S.curbT = 0; S.ground = 0;
-  S.nextStop = S.stops.length > 1 ? 1 : 0;
-  S.score = 0; S.run = 0; S.answered = false; S.paused = false;
-  S.stops.forEach(s=> delete s.result);
-  if (S.nextStop === 1) S.stops[0].result = "hit";
+  S.view = 0; S.curbT = 0; S.ground = 0; S.atStop = false;
+  S.nextStop = S.stops.length > 1 ? 1 : S.stops.length;
+  S.stops.forEach((s, i)=> s.done = (i === 0));
+  S.paused = false;
+  buildStopMarkers();
 
-  $("card").classList.add("hidden");
+  $("card").classList.remove("on");
   $("controls").classList.remove("hidden");
   $("pauseBtn").textContent = "Pause";
   $("viewBtn").textContent = "Verfolger";
-  renderStrip(); updateStats();
+  $("strip").style.display = S.mode === "route" ? "flex" : "none";
+  $("nav").style.display = S.mode === "route" ? "flex" : "none";
+  renderStrip();
 
-  toast(S.mode === "quiz"
-    ? "Gas geben. An jedem Stopp kommt die Frage.\nV wechselt die Ansicht, Ziehen dreht die Kamera."
-    : "Freie Fahrt. V wechselt die Ansicht, Ziehen dreht die Kamera.", 4200);
+  toast(S.mode === "route"
+    ? "Zustellung: " + (S.stops.length - 1) + " Stopps.\nDer Pfeil oben zeigt zum nächsten."
+    : "Freie Fahrt. Wischen dreht die Kamera, V wechselt die Ansicht.", 4000);
 
-  S.running = true; S.last = performance.now();
+  S.running = true; S.last = performance.now(); S.tileTimer = 0; S.photoTimer = 0;
   S.raf = requestAnimationFrame(tick);
 }
 
@@ -1020,6 +1069,7 @@ function stopDriving(){
   S.running = false;
   if (S.raf) cancelAnimationFrame(S.raf);
   S.raf = null;
+  $("photo").classList.remove("on");
 }
 
 function tick(now){
@@ -1027,7 +1077,10 @@ function tick(now){
   const dt = Math.min(0.05, (now - S.last)/1000);
   S.last = now;
   if (!S.paused) drive(dt);
+  S.tileTimer -= dt; if (S.tileTimer <= 0){ S.tileTimer = TILE_CHECK_S; updateTiles(); }
+  S.photoTimer -= dt; if (S.photoTimer <= 0){ S.photoTimer = 0.5; updatePhotos(); }
   updateCamera(dt);
+  S.three.ground.position.set(S.car.x, -0.06, S.car.z);
   S.three.renderer.render(S.three.scene, S.three.camera);
   paintHud();
   updateLabels();
@@ -1036,164 +1089,100 @@ function tick(now){
 
 function drive(dt){
   const c = S.car;
-
   if (S.keys.gas)        c.speed = Math.min(MAX_SPEED_MS, c.speed + ACCEL_MS2*dt);
   else if (S.keys.brake) c.speed = Math.max(-REV_SPEED_MS, c.speed - BRAKE_MS2*dt);
   else {
     const drop = ROLL_MS2*dt;
     c.speed = c.speed > 0 ? Math.max(0, c.speed - drop) : Math.min(0, c.speed + drop);
   }
-
-  // Lenken wirkt erst mit Fahrt, wie bei einem echten Auto
   const steer = (S.keys.right ? 1 : 0) - (S.keys.left ? 1 : 0);
   if (steer){
     const grip = clamp(Math.abs(c.speed)/4, 0.12, 1);
     c.heading = norm(c.heading + steer * TURN_DEG_S * dt * grip * Math.sign(c.speed || 1));
   }
-
   const h = c.heading * RAD;
-  const fx = Math.sin(h), fz = -Math.cos(h);
-  let nx = c.x + fx * c.speed * dt;
-  let nz = c.z + fz * c.speed * dt;
+  let nx = c.x + Math.sin(h) * c.speed * dt;
+  let nz = c.z - Math.cos(h) * c.speed * dt;
 
-  // Fahrbahnrand: über die Kante hinaus wird zurückgedrängt
   const near = nearestRoad(nx, nz);
   const limit = near ? near.seg.half - CAR_HALF_W : 0;
-  if (!near){
-    c.speed *= 0.2; S.curbT = 0.6;                 // gar keine Straße in Reichweite
-  } else if (near.d > Math.max(0.4, limit)){
+  if (!near){ c.speed *= 0.2; S.curbT = 0.6; }
+  else if (near.d > Math.max(0.4, limit)){
     const lim = Math.max(0.4, limit);
     const ux = (nx - near.x)/(near.d || 1), uz = (nz - near.z)/(near.d || 1);
-    nx = near.x + ux*lim; nz = near.z + uz*lim;
-    c.speed *= (1 - 2.2*dt);
-    S.curbT = 0.6;
-    c.x = nx; c.z = nz;
-  } else {
-    c.x = nx; c.z = nz;
-  }
+    c.x = near.x + ux*lim; c.z = near.z + uz*lim;
+    c.speed *= (1 - 2.2*dt); S.curbT = 0.6;
+  } else { c.x = nx; c.z = nz; }
+  S.streetName = near ? near.seg.name : "";
 
   S.curbT = Math.max(0, S.curbT - dt);
   $("curb").classList.toggle("on", S.curbT > 0);
   S.ground = c.speed;
-
-  const car3 = S.three.car;
-  car3.position.set(c.x, 0, c.z);
-  car3.rotation.y = -c.heading * RAD;
-
-  checkArrival();
+  S.three.car.position.set(c.x, 0, c.z);
+  S.three.car.rotation.y = -c.heading * RAD;
+  if (S.mode === "route") checkArrival();
 }
 
 function updateCamera(dt){
   const c = S.car, cam = S.three.camera;
   const yaw = (c.heading + S.cam.yaw) * RAD;
-
-  if (S.view === 2){                                  // Vogelperspektive
-    cam.position.set(c.x, BIRD_UP, c.z + 0.01);
-    cam.lookAt(c.x, 0, c.z);
-    return;
-  }
-  if (S.view === 1){                                  // Cockpit
+  if (S.view === 2){ cam.position.set(c.x, BIRD_UP, c.z + 0.01); cam.lookAt(c.x, 0, c.z); return; }
+  if (S.view === 1){
     const h = c.heading * RAD;
     cam.position.set(c.x - Math.sin(h)*0.2, 1.9, c.z + Math.cos(h)*0.2);
-    const look = new THREE.Vector3(
-      c.x + Math.sin(yaw)*20, 1.5, c.z - Math.cos(yaw)*20);
-    cam.lookAt(look);
+    cam.lookAt(new THREE.Vector3(c.x + Math.sin(yaw)*20, 1.5, c.z - Math.cos(yaw)*20));
     return;
   }
-
-  const want = new THREE.Vector3(                     // Verfolger
-    c.x - Math.sin(yaw)*CHASE_BACK,
-    CHASE_UP + S.cam.pitch,
-    c.z + Math.cos(yaw)*CHASE_BACK);
+  const want = new THREE.Vector3(c.x - Math.sin(yaw)*CHASE_BACK, CHASE_UP + S.cam.pitch, c.z + Math.cos(yaw)*CHASE_BACK);
   S.cam.pos.lerp(want, Math.min(1, dt*CHASE_LAG));
   cam.position.copy(S.cam.pos);
   cam.lookAt(c.x, 1.2, c.z);
 }
 
-/* ---------------- Stopps und Abfrage ---------------- */
+/* ---------------- Zustellung ---------------- */
 
 function checkArrival(){
-  if (S.nextStop >= S.stops.length) return;
+  if (S.atStop || S.nextStop >= S.stops.length) return;
   const s = S.stops[S.nextStop];
   if (Math.hypot(S.car.x - s.x, S.car.z - s.z) > ARRIVE_M) return;
-
-  S.paused = true;
+  S.atStop = true; S.paused = true;
   S.car.speed = 0; S.ground = 0;
   S.keys.gas = S.keys.brake = false;
   $("gas").classList.remove("hot"); $("brake").classList.remove("hot");
+  $("cardKicker").textContent = "Stopp " + S.nextStop + " von " + (S.stops.length - 1);
+  $("cardTitle").textContent = s.label;
+  $("card").classList.add("on");
+}
 
-  if (S.mode === "quiz") askStop();
-  else {
-    s.result = "hit"; toast(s.label, 2000);
-    S.nextStop++; S.paused = false;
-    renderStrip(); updateStats();
-    if (S.nextStop >= S.stops.length) finish();
+$("delivered").addEventListener("click", deliver);
+function deliver(){
+  if (!S.atStop) return;
+  const s = S.stops[S.nextStop];
+  s.done = true; if (s.mesh) s.mesh.material = S.three.mats.stopDone;
+  S.nextStop++; S.atStop = false;
+  $("card").classList.remove("on");
+  renderStrip();
+  if (S.nextStop >= S.stops.length){
+    $("controls").classList.add("hidden");
+    toast("Feierabend. Alle " + (S.stops.length - 1) + " Stopps zugestellt.\n„Karte“ für die nächste Runde.", 9000);
+    return;
   }
-}
-
-const askedCount = ()=> Math.max(1, S.stops.length - 1);
-
-function finish(){
-  $("controls").classList.add("hidden");
-  toast(S.mode === "quiz"
-    ? "Feierabend. " + S.score + " von " + askedCount() + " Treffer.\n„Karte“ für die nächste Runde."
-    : "Alle Stopps abgefahren.\n„Karte“ für die nächste Runde.", 9000);
-}
-
-function askStop(){
-  const i = S.nextStop;
-  S.answered = false;
-  $("cardKicker").textContent = "Stopp " + String(i+1).padStart(2,"0") + " von " + String(S.stops.length).padStart(2,"0");
-  $("question").textContent = "Wo hältst du gerade?";
-
-  const box = $("opts"); box.innerHTML = "";
-  pickChoices(i).forEach((ci, n)=>{
-    const b = document.createElement("button");
-    b.className = "opt";
-    b.innerHTML = '<span class="k">' + (n+1) + '</span><span>' + escapeHtml(S.stops[ci].label) + '</span>';
-    b.addEventListener("click", ()=> answer(b, ci === i));
-    box.appendChild(b);
-  });
-  $("verdict").classList.remove("on");
-  $("card").classList.remove("hidden");
-  renderStrip(); updateStats();
-}
-
-function pickChoices(correct){
-  const others = S.stops.map((_,i)=>i).filter(i=>i !== correct);
-  shuffle(others);
-  const list = others.slice(0, Math.min(3, others.length));
-  list.push(correct);
-  return shuffle(list);
-}
-
-function answer(button, right){
-  if (S.answered) return;
-  S.answered = true;
-  const stop = S.stops[S.nextStop];
-  stop.result = right ? "hit" : "miss";
-
-  document.querySelectorAll(".opt").forEach(b=>{
-    b.disabled = true;
-    if (b.textContent.includes(stop.label)) b.classList.add("correct");
-  });
-  if (!right) button.classList.add("wrong");
-  if (right){ S.score++; S.run++; } else { S.run = 0; }
-
-  $("verdictText").innerHTML = right
-    ? '<b style="color:var(--ok)">Sitzt.</b> ' + escapeHtml(stop.label)
-    : '<b style="color:var(--stamp)">Daneben.</b> Hier ist ' + escapeHtml(stop.label);
-  $("verdict").classList.add("on");
-  renderStrip(); updateStats();
-}
-
-$("next").addEventListener("click", ()=>{
-  $("card").classList.add("hidden");
-  S.nextStop++;
-  updateStats(); renderStrip();
-  if (S.nextStop >= S.stops.length){ finish(); return; }
   S.paused = false; S.last = performance.now();
-});
+}
+
+function renderStrip(){
+  const strip = $("strip");
+  strip.innerHTML = "";
+  S.stops.forEach((stop, i)=>{
+    if (i === 0) return;
+    const el = document.createElement("div");
+    el.className = "stop" + (i === S.nextStop ? " now" : "") + (stop.done ? " done" : "");
+    el.innerHTML = '<span class="n">' + String(i).padStart(2,"0") + '</span><span class="t">' + escapeHtml(stop.label) + '</span>';
+    strip.appendChild(el);
+  });
+  const now = strip.children[S.nextStop - 1];
+  if (now) now.scrollIntoView({block:"nearest"});
+}
 
 /* ============================================================================
    STEUERUNG
@@ -1202,19 +1191,15 @@ $("next").addEventListener("click", ()=>{
 $("quit").addEventListener("click", ()=>{ stopDriving(); show("plan"); initMap(); });
 
 $("pauseBtn").addEventListener("click", ()=>{
-  if (!$("card").classList.contains("hidden")) return;
+  if (S.atStop) return;
   S.paused = !S.paused; S.last = performance.now();
   $("pauseBtn").textContent = S.paused ? "Weiter" : "Pause";
 });
-
 $("lookReset").addEventListener("click", ()=>{ S.cam.yaw = 0; S.cam.pitch = 0; });
 
 const VIEWS = ["Verfolger","Cockpit","Vogel"];
 $("viewBtn").addEventListener("click", cycleView);
-function cycleView(){
-  S.view = (S.view + 1) % 3;
-  $("viewBtn").textContent = VIEWS[S.view];
-}
+function cycleView(){ S.view = (S.view + 1) % 3; $("viewBtn").textContent = VIEWS[S.view]; }
 
 [["gas","gas"],["brake","brake"],["steerL","left"],["steerR","right"]].forEach(([id,key])=>{
   const el = $(id);
@@ -1225,33 +1210,17 @@ function cycleView(){
   ["mouseup","mouseleave","touchend","touchcancel"].forEach(ev=> el.addEventListener(ev, up));
 });
 
-const KEYMAP = {w:"gas", arrowup:"gas", s:"brake", arrowdown:"brake",
-                a:"left", arrowleft:"left", d:"right", arrowright:"right"};
-
+const KEYMAP = {w:"gas", arrowup:"gas", s:"brake", arrowdown:"brake", a:"left", arrowleft:"left", d:"right", arrowright:"right"};
 document.addEventListener("keydown", (e)=>{
   if (!$("game").classList.contains("on")) return;
   const k = e.key.toLowerCase();
   if (KEYMAP[k]){ e.preventDefault(); S.keys[KEYMAP[k]] = true; return; }
   if (k === "v"){ cycleView(); return; }
   if (k === "r"){ S.cam.yaw = 0; S.cam.pitch = 0; return; }
-  if (e.key === " "){
-    e.preventDefault();
-    if (!$("card").classList.contains("hidden")){ if (S.answered) $("next").click(); }
-    else $("pauseBtn").click();
-    return;
-  }
-  if (!$("card").classList.contains("hidden") && !S.answered && /^[1-4]$/.test(e.key)){
-    const b = document.querySelectorAll(".opt")[Number(e.key)-1];
-    if (b) b.click();
-  }
+  if (e.key === " "){ e.preventDefault(); if (S.atStop) deliver(); else $("pauseBtn").click(); }
 });
+document.addEventListener("keyup", (e)=>{ const k = e.key.toLowerCase(); if (KEYMAP[k]) S.keys[KEYMAP[k]] = false; });
 
-document.addEventListener("keyup", (e)=>{
-  const k = e.key.toLowerCase();
-  if (KEYMAP[k]) S.keys[KEYMAP[k]] = false;
-});
-
-/* Kamera drehen durch Ziehen */
 (function lookControl(){
   const el = $("world");
   el.addEventListener("pointerdown", (e)=>{
@@ -1264,8 +1233,7 @@ document.addEventListener("keyup", (e)=>{
     S.cam.yaw = clamp(S.lookDrag.yaw - (e.clientX - S.lookDrag.x) * 0.3, -180, 180);
     S.cam.pitch = clamp(S.lookDrag.pitch + (e.clientY - S.lookDrag.y) * 0.04, -1.5, 14);
   });
-  ["pointerup","pointercancel","pointerleave"].forEach(ev=>
-    el.addEventListener(ev, ()=>{ S.lookDrag = null; el.classList.remove("looking"); }));
+  ["pointerup","pointercancel","pointerleave"].forEach(ev=> el.addEventListener(ev, ()=>{ S.lookDrag = null; el.classList.remove("looking"); }));
 })();
 
 /* ============================================================================
@@ -1273,64 +1241,50 @@ document.addEventListener("keyup", (e)=>{
    ========================================================================== */
 
 function paintHud(){
-  if (!S.car) return;
   const v = S.ground || 0;
   $("kmh").textContent = Math.round(Math.abs(v) * 3.6);
   $("gear").textContent = v < -0.2 ? "R" : (v > 0.2 ? "D" : "P");
+  $("street").textContent = S.streetName || "";
 
-  if (S.nextStop < S.stops.length){
+  if (S.mode === "route" && S.nextStop < S.stops.length){
     const s = S.stops[S.nextStop];
-    const d = Math.round(Math.hypot(S.car.x - s.x, S.car.z - s.z));
-    $("dist").textContent = "Ziel " + d + " m";
-  } else $("dist").textContent = "";
+    const d = Math.hypot(S.car.x - s.x, S.car.z - s.z);
+    const bearing = Math.atan2(s.x - S.car.x, -(s.z - S.car.z)) * DEG;
+    $("arrow").style.transform = "rotate(" + angleDiff(bearing, S.car.heading) + "deg)";
+    $("navDist").textContent = d >= 1000 ? (d/1000).toFixed(1) + " km" : Math.round(d) + " m";
+    $("navLabel").textContent = "Stopp " + S.nextStop + " · " + s.label;
+  } else if (S.mode === "route"){
+    $("navDist").textContent = "fertig"; $("navLabel").textContent = "Alle zugestellt";
+  }
 }
 
-/* Hausnummern erscheinen als Schilder in der Welt – im Training nur nach der
-   Antwort, sonst wäre die Frage sinnlos. */
+/* Hausnummern der umliegenden Kacheln als Schilder */
 function updateLabels(){
   const box = $("labels");
-  const showNumbers = S.mode !== "quiz" || S.answered;
-  if (!showNumbers){ if (box.childElementCount) box.innerHTML = ""; return; }
-
-  const cam = S.three.camera;
+  const cam = S.three.camera, c = S.car;
   const v = new THREE.Vector3();
-  const near = S.world.addresses.filter(a=>
-    Math.hypot(a.x - S.car.x, a.z - S.car.z) < 55).slice(0, 24);
-
+  const near = [];
+  const ix = Math.floor(c.x/S.cell), iz = Math.floor(c.z/S.cell);
+  for (let i = -1; i <= 1 && near.length < 24; i++) for (let j = -1; j <= 1; j++){
+    const t = S.tiles.get((ix+i) + "_" + (iz+j));
+    if (!t || t.status !== "ready") continue;
+    for (const a of t.data.addresses){
+      if (Math.hypot(a.x - c.x, a.z - c.z) < 55){ near.push(a); if (near.length >= 24) break; }
+    }
+  }
+  const goal = (S.mode === "route" && S.nextStop < S.stops.length) ? S.stops[S.nextStop] : null;
   box.innerHTML = "";
-  near.forEach(a=>{
-    v.set(a.x, 1.9, a.z).project(cam);
-    if (v.z > 1) return;
+  const place = (x, z, y, text, cls)=>{
+    v.set(x, y, z).project(cam);
+    if (v.z > 1 || Math.abs(v.x) > 1.1 || Math.abs(v.y) > 1.1) return;
     const el = document.createElement("div");
-    el.className = "tag";
-    el.textContent = a.text;
+    el.className = cls; el.textContent = text;
     el.style.left = ((v.x + 1)/2 * window.innerWidth) + "px";
     el.style.top  = ((-v.y + 1)/2 * window.innerHeight) + "px";
     box.appendChild(el);
-  });
-}
-
-function renderStrip(){
-  const strip = $("strip");
-  strip.innerHTML = "";
-  S.stops.forEach((stop, i)=>{
-    const isNow = i === S.nextStop;
-    const hide = S.mode === "quiz" && isNow && !S.answered;
-    const el = document.createElement("div");
-    el.className = "stop" + (isNow ? " now" : "") + (hide ? " sealed" : "")
-      + (stop.result === "hit" ? " hit" : "") + (stop.result === "miss" ? " miss" : "");
-    el.innerHTML = '<span class="n">' + String(i+1).padStart(2,"0") + '</span>'
-      + '<span class="t">' + (hide ? "· · · · ·" : escapeHtml(stop.label)) + '</span>';
-    strip.appendChild(el);
-  });
-  const now = strip.children[S.nextStop];
-  if (now) now.scrollIntoView({block:"nearest"});
-}
-
-function updateStats(){
-  $("statScore").textContent = S.score;
-  $("statRun").textContent = S.run;
-  $("statLeft").textContent = Math.max(0, S.stops.length - S.nextStop);
+  };
+  near.forEach(a=> place(a.x, a.z, 1.9, a.t, "tag"));
+  if (goal && Math.hypot(goal.x - c.x, goal.z - c.z) < 220) place(goal.x, goal.z, 7.4, goal.label, "tag goal");
 }
 
 let toastTimer;
@@ -1345,26 +1299,20 @@ function escapeHtml(s){
   return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 }
 
-function shuffle(a){
-  for (let i=a.length-1;i>0;i--){ const j = Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; }
-  return a;
-}
+/* ============================================================================
+   START
+   ========================================================================== */
 
-/* Service Worker – macht die Seite installierbar und startfähig ohne Netz.
-   Läuft nur über https oder localhost; bei file:// oder content:// wird er
-   stillschweigend übersprungen. */
-if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")){
-  window.addEventListener("load", ()=>{
-    navigator.serviceWorker.register("sw.js").catch(()=>{});
-  });
-}
-
-/* Start */
-initMap();
-(function envBanner(){
-  const hint = environmentHint();
-  if (hint) msg("planMsg", hint);
-  $("planMsg").style.whiteSpace = "pre-line";
+(async function main(){
+  try {
+    if (typeof L === "undefined" || typeof THREE === "undefined")
+      throw new Error("Die Bibliotheken unter lib/ fehlen und konnten auch nicht nachgeladen werden.");
+    await loadIndex();
+    initMap();
+  } catch (err){
+    $("areaTag").textContent = "Keine Daten";
+    msg("planMsg", "Die Weltdaten fehlen (" + err.message + "). Erst den Workflow „Weltdaten bauen“ laufen lassen und die App neu bauen.");
+  }
 })();
 </script>
 </body>
