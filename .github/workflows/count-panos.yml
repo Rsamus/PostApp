@@ -1,0 +1,31 @@
+name: Panoramen zählen
+
+# Prüft, wie viele 360°-Panoramen Mapillary im Umkreis hat. Lädt nichts herunter,
+# ändert nichts im Repository. Ergebnis steht im Protokoll des Schritts "Zählen".
+on:
+  workflow_dispatch:
+    inputs:
+      lat:
+        description: "Mittelpunkt Breite"
+        default: "50.3273"
+      lng:
+        description: "Mittelpunkt Länge"
+        default: "11.7005"
+      radius_km:
+        description: "Radius in km"
+        default: "5"
+
+jobs:
+  zaehlen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Quelltext holen
+        uses: actions/checkout@v4
+      - name: Werkzeuge
+        run: pip install --quiet requests
+      - name: Zählen
+        env:
+          MAPILLARY_TOKEN: ${{ secrets.MAPILLARY_TOKEN }}
+        run: |
+          python3 tools/count_panos.py --lat "${{ inputs.lat }}" --lng "${{ inputs.lng }}" --radius-km "${{ inputs.radius_km }}"
