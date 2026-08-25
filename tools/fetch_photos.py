@@ -9,7 +9,10 @@ Aufruf:
 Ergebnis in --out:
     photos.json         Liste: id, x, z (Meter wie in index.json), h (Kompass in Grad),
                         u (Mapillary-Nutzername), f (Dateiname), d (Aufnahmedatum),
-                        s (Nummer der Aufnahmefolge), n (Position darin)
+                        s (Nummer der Aufnahmefolge), n (Position darin),
+                        fl (normierte Brennweite), a (Seitenverhältnis Breite/Höhe)
+                        Position/Richtung sind, wenn vorhanden, die von Mapillary
+                        nachgerechneten Werte (computed_*), sonst die Rohwerte.
     photos/<id>.jpg     Bild, --width px breit
 
 Lizenz: Alle Mapillary-Bilder stehen unter CC BY-SA 4.0. Die App muss zu jedem
@@ -29,7 +32,8 @@ import requests
 from PIL import Image
 
 API = "https://graph.mapillary.com/images"
-FIELDS = "id,geometry,compass_angle,captured_at,creator,thumb_1024_url,is_pano,sequence"
+FIELDS = ("id,geometry,computed_geometry,compass_angle,computed_compass_angle,captured_at,creator,"
+          "thumb_1024_url,is_pano,sequence,camera_type,camera_parameters,width,height")
 EARTH = 6378137.0
 RAD = math.pi / 180.0
 
@@ -106,14 +110,17 @@ def main():
         if img.get("is_pano"):
             continue
         try:
-            lon, lat = img["geometry"]["coordinates"]
+            geom = img.get("computed_geometry") or img["geometry"]
+            lon, lat = geom["coordinates"]
         except (KeyError, TypeError, ValueError):
             continue
         x, z = project(lat, lon, lat0, lon0, cos0)
         if x * x + z * z > r_m * r_m:
             continue
-        heading = float(img.get("compass_angle") or 0.0)
-        seqs[img.get("sequence") or img["id"]].append((img, x, z, heading))
+        heading = img.get("computed_compass_angle")
+        if heading is None:
+            heading = img.get("compass_angle") or 0.0
+        seqs[img.get("sequence") or img["id"]].append((img, x, z, float(heading)))
 
     thinned = []   # (newest_captured, [Kandidaten in Reihenfolge])
     for sid, lst in seqs.items():
@@ -158,11 +165,14 @@ def main():
             continue
         creator = img.get("creator") or {}
         captured = img.get("captured_at")
+        params = img.get("camera_parameters") or []
+        focal = float(params[0]) if params and params[0] else 0.0
+        aspect = round(w / h, 3) if h else 1.333
         out.append({
             "id": img["id"], "x": round(x, 1), "z": round(z, 1), "h": round(heading, 1),
             "u": creator.get("username", "unbekannt"), "f": fname,
             "d": time.strftime("%Y-%m-%d", time.gmtime(captured / 1000)) if captured else "",
-            "s": seq_no, "n": n,
+            "s": seq_no, "n": n, "fl": round(focal, 4), "a": aspect,
         })
         if (i + 1) % 100 == 0:
             print(f"  {i+1}/{len(chosen)} geladen")
