@@ -373,9 +373,12 @@ const CHASE_UP      = 3.0;
 const CHASE_LAG     = 5.0;
 const BIRD_UP       = 46;
 
-const PHOTO_NEAR_M  = 70;     // Fototafeln in dieser Nähe zeigen
-const PHOTO_PREVIEW_M = 28;   // Vorschaufenster, wenn ein Foto so nah und ähnlich gerichtet ist
-const PHOTO_MAX_TEX = 24;     // gleichzeitig geladene Texturen
+const ROAD_SCALE    = 2.0;    // Fahrbahnen breiter als in OSM angegeben
+
+const PROJ_RANGE_M  = 45;     // Fotoprojektion: Fotos bis zu diesem Abstand verwenden
+const PROJ_CAM_H    = 1.4;    // angenommene Kamerahöhe der Aufnahmen (Dashcam)
+const PROJ_DEFAULT_HFOV = 95; // Bildwinkel, wenn keine Brennweite bekannt ist (Grad)
+const PROJ_MAX_TEX  = 24;     // Texturen im Speicher
 const FOTO_RANGE_M  = 30;     // Fotofahrt: Bild muss so nah sein
 const FOTO_ANGLE    = 55;     // ... und so ähnlich gerichtet (Grad)
 
@@ -386,7 +389,7 @@ const FOTO_ANGLE    = 55;     // ... und so ähnlich gerichtet (Grad)
 const S = {
   index:null, origin:null, cell:500,
   tiles:new Map(),                   // key -> {status, data, group, segments, addresses}
-  photos:[], photoMeshes:new Map(),  // id -> mesh
+  photos:[], texCache:new Map(),     // id -> {tex, ready, used}
   map:null, mapLayer:null, points:[], seq:1, renderId:0,
   three:null, car:null, cam:{yaw:0,pitch:0,pos:null}, view:0, ground:0,
   stops:[], nextStop:0, mode:"free",
@@ -479,7 +482,7 @@ function segmentsOf(roads){
   const segs = [];
   roads.forEach(r=>{
     for (let i = 0; i < r.p.length - 1; i++)
-      segs.push({ax:r.p[i][0], az:r.p[i][1], bx:r.p[i+1][0], bz:r.p[i+1][1], half:r.w/2, name:r.n || ""});
+      segs.push({ax:r.p[i][0], az:r.p[i][1], bx:r.p[i+1][0], bz:r.p[i+1][1], half:r.w*ROAD_SCALE/2, name:r.n || ""});
   });
   return segs;
 }
@@ -548,7 +551,7 @@ async function renderVector(){
     });
     d.roads.forEach(r=>{
       const pts = r.p.map(p=>{ const ll = unproject(p[0], p[1]); return [ll.lat, ll.lng]; });
-      L.polyline(pts, {color:"#9AA4B2", weight:Math.max(1.2, r.w / mpp), opacity:.95,
+      L.polyline(pts, {color:"#9AA4B2", weight:Math.max(1.2, r.w * ROAD_SCALE / mpp), opacity:.95,
         lineCap:"round", lineJoin:"round", interactive:false}).addTo(S.mapLayer);
     });
     if (z >= 18) d.addresses.forEach(ad=>{
@@ -807,7 +810,8 @@ function buildScene(){
   sun.position.set(120, 220, -90);
   scene.add(sun);
 
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(2400, 2400), new THREE.MeshLambertMaterial({color:0x5F6B4B}));
+  const proj = makeProjection();
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(2400, 2400), proj.material(0x5F6B4B, {side:THREE.DoubleSide}));
   ground.rotation.x = -Math.PI/2; ground.position.y = -0.06;
   scene.add(ground);
 
@@ -828,13 +832,12 @@ function buildScene(){
   scene.add(car);
 
   const stopGroup = new THREE.Group(); scene.add(stopGroup);
-  const photoGroup = new THREE.Group(); scene.add(photoGroup);
 
-  S.three = {renderer, scene, camera, car, ground, stopGroup, photoGroup,
+  S.three = {renderer, scene, camera, car, ground, stopGroup, proj,
     mats:{
-      asphalt:new THREE.MeshLambertMaterial({color:0x2C3038, side:THREE.DoubleSide}),
-      curb:new THREE.MeshLambertMaterial({color:0x6E6A60, side:THREE.DoubleSide}),
-      building:new THREE.MeshLambertMaterial({vertexColors:true}),
+      asphalt:proj.material(0x2C3038, {side:THREE.DoubleSide}),
+      curb:proj.material(0x6E6A60, {side:THREE.DoubleSide}),
+      building:proj.material(0xFFFFFF, {vertexColors:true}),
       post:new THREE.MeshLambertMaterial({color:0x3A3F49}),
       box:new THREE.MeshLambertMaterial({color:0xF2B705}),
       stop:new THREE.MeshLambertMaterial({color:0xF2B705, transparent:true, opacity:0.75}),
@@ -894,7 +897,7 @@ function updateTiles(){
 function roadGeometry(roads, y, widen){
   const pos = [];
   roads.forEach(r=>{
-    const half = r.w/2 + widen;
+    const half = r.w*ROAD_SCALE/2 + widen;
     for (let i = 0; i < r.p.length - 1; i++){
       const a = r.p[i], b = r.p[i+1];
       const dx = b[0] - a[0], dz = b[1] - a[1];
@@ -972,52 +975,147 @@ function buildStopMarkers(){
 }
 
 /* ============================================================================
-   FOTOS – Tafeln in der Welt und Vorschaufenster
+   FOTOPROJEKTION – das nächste Foto wird aus seiner Aufnahmeposition wie mit
+   einem Diaprojektor auf Wände, Fahrbahn und Boden geworfen. Zwei Projektoren
+   (die beiden nächsten Fotos) werden nach Abstand gemischt.
    ========================================================================== */
+
+const PROJ_VERT = `
+varying vec3 vWorld; varying vec3 vNormal; varying vec3 vColor;
+void main(){
+  vec4 wp = modelMatrix * vec4(position, 1.0);
+  vWorld = wp.xyz;
+  vNormal = normalize(mat3(modelMatrix) * normal);
+  #ifdef USE_COLOR
+    vColor = color;
+  #else
+    vColor = vec3(1.0);
+  #endif
+  gl_Position = projectionMatrix * viewMatrix * wp;
+}`;
+
+const PROJ_FRAG = `
+uniform vec3 baseColor; uniform vec3 fogColor; uniform float fogNear; uniform float fogFar; uniform vec3 sunDir;
+uniform sampler2D tex0; uniform sampler2D tex1;
+uniform mat4 proj0; uniform mat4 proj1;
+uniform vec3 cam0; uniform vec3 cam1;
+uniform float w0; uniform float w1;
+varying vec3 vWorld; varying vec3 vNormal; varying vec3 vColor;
+
+vec2 projUv(mat4 P){ vec4 c = P * vec4(vWorld, 1.0); return c.xy / c.w * 0.5 + 0.5; }
+
+float projWeight(mat4 P, vec3 cp, vec3 N){
+  vec4 c = P * vec4(vWorld, 1.0);
+  if (c.w <= 0.0) return 0.0;
+  vec2 uv = c.xy / c.w * 0.5 + 0.5;
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 0.0;
+  float facing = dot(N, normalize(cp - vWorld));
+  if (facing <= 0.03) return 0.0;
+  float edge = smoothstep(0.0, 0.06, uv.x) * smoothstep(0.0, 0.06, 1.0 - uv.x) * smoothstep(0.0, 0.05, uv.y);
+  return edge * min(1.0, facing * 4.0);
+}
+
+void main(){
+  vec3 N = normalize(vNormal);
+  if (!gl_FrontFacing) N = -N;
+  float light = 0.55 + 0.45 * max(dot(N, sunDir), 0.0);
+  vec3 col = baseColor * vColor * light;
+  float a0 = projWeight(proj0, cam0, N) * w0;
+  float a1 = projWeight(proj1, cam1, N) * w1;
+  float sum = a0 + a1;
+  if (sum > 0.001){
+    vec3 pc = vec3(0.0);
+    if (a0 > 0.0) pc += texture2D(tex0, projUv(proj0)).rgb * a0;
+    if (a1 > 0.0) pc += texture2D(tex1, projUv(proj1)).rgb * a1;
+    pc /= sum;
+    col = mix(col, pc, min(1.0, sum));
+  }
+  float fog = smoothstep(fogNear, fogFar, length(vWorld - cameraPosition));
+  gl_FragColor = vec4(mix(col, fogColor, fog), 1.0);
+}`;
+
+function makeProjection(){
+  const blank = new THREE.DataTexture(new Uint8Array([128,128,128,255]), 1, 1, THREE.RGBAFormat);
+  blank.needsUpdate = true;
+  const shared = {
+    fogColor:{value:new THREE.Color(0x8FA6B8)}, fogNear:{value:140}, fogFar:{value:520},
+    sunDir:{value:new THREE.Vector3(120, 220, -90).normalize()},
+    tex0:{value:blank}, tex1:{value:blank},
+    proj0:{value:new THREE.Matrix4()}, proj1:{value:new THREE.Matrix4()},
+    cam0:{value:new THREE.Vector3()}, cam1:{value:new THREE.Vector3()},
+    w0:{value:0}, w1:{value:0},
+  };
+  const projCam = new THREE.PerspectiveCamera(60, 4/3, 0.5, 400);
+  return {
+    shared, projCam, blank,
+    material(color, opts={}){
+      const uniforms = Object.assign({baseColor:{value:new THREE.Color(color)}}, shared);
+      return new THREE.ShaderMaterial(Object.assign({uniforms, vertexShader:PROJ_VERT, fragmentShader:PROJ_FRAG}, opts));
+    },
+    /* Projektionsmatrix für ein Foto: Position, Kompassrichtung, Bildwinkel */
+    matrixFor(p, out){
+      const c = projCam, h = p.h * RAD;
+      const hfov = p.fl > 0 ? 2 * Math.atan(0.5 / p.fl) : PROJ_DEFAULT_HFOV * RAD;
+      const aspect = p.a > 0 ? p.a : 4/3;
+      c.fov = 2 * Math.atan(Math.tan(hfov/2) / aspect) * DEG;
+      c.aspect = aspect;
+      c.updateProjectionMatrix();
+      c.position.set(p.x, PROJ_CAM_H, p.z);
+      c.lookAt(p.x + Math.sin(h), PROJ_CAM_H, p.z - Math.cos(h));
+      c.updateMatrixWorld(true);
+      c.matrixWorldInverse.copy(c.matrixWorld).invert();
+      out.copy(c.projectionMatrix).multiply(c.matrixWorldInverse);
+    },
+  };
+}
+
+function getTexture(p){
+  let e = S.texCache.get(p.id);
+  if (!e){
+    e = {tex:null, ready:false, used:0};
+    S.texCache.set(p.id, e);
+    e.tex = texLoader.load(DATA_URL + "photos/" + p.f, ()=>{ e.ready = true; });
+    e.tex.minFilter = THREE.LinearFilter;
+    if (S.texCache.size > PROJ_MAX_TEX){          // ältesten Eintrag verwerfen
+      let oldest = null;
+      S.texCache.forEach((v, k)=>{ if (!oldest || v.used < oldest.v.used) oldest = {k, v}; });
+      if (oldest && oldest.k !== p.id){ if (oldest.v.tex) oldest.v.tex.dispose(); S.texCache.delete(oldest.k); }
+    }
+  }
+  e.used = performance.now();
+  return e;
+}
 
 const texLoader = (typeof THREE !== "undefined") ? new THREE.TextureLoader() : null;
 
-function updatePhotos(){
-  if (!S.photos.length) return;
-  const c = S.car, grp = S.three.photoGroup;
-  const near = S.photos.filter(p=> Math.hypot(p.x - c.x, p.z - c.z) < PHOTO_NEAR_M);
-
-  // ferne Tafeln entfernen
-  S.photoMeshes.forEach((mesh, id)=>{
-    if (Math.hypot(mesh.position.x - c.x, mesh.position.z - c.z) > PHOTO_NEAR_M + 20){
-      grp.remove(mesh); if (mesh.material.map) mesh.material.map.dispose(); mesh.material.dispose();
-      S.photoMeshes.delete(id);
-    }
-  });
-  // neue Tafeln, begrenzt
-  for (const p of near){
-    if (S.photoMeshes.size >= PHOTO_MAX_TEX) break;
-    if (S.photoMeshes.has(p.id)) continue;
-    const tex = texLoader.load(DATA_URL + "photos/" + p.f);
-    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(4.8, 3.6),
-      new THREE.MeshBasicMaterial({map:tex, side:THREE.DoubleSide, transparent:true, opacity:0.92}));
-    // rechts neben der Aufnahmeposition, Blickrichtung des Fotos
-    const h = p.h * RAD;
-    mesh.position.set(p.x + Math.cos(h) * 4.5, 2.4, p.z + Math.sin(h) * 4.5);
-    mesh.rotation.y = -h - Math.PI/2;
-    S.photoMeshes.set(p.id, mesh); grp.add(mesh);
-  }
-
-  // Vorschaufenster: nächstes Foto mit ähnlicher Blickrichtung
-  let best = null;
-  for (const p of near){
+/* Die zwei nächsten Fotos als Projektoren setzen */
+function updateProjection(){
+  const u = S.three.proj.shared;
+  if (!S.photos.length){ u.w0.value = 0; u.w1.value = 0; return; }
+  const c = S.car;
+  const cands = [];
+  for (const p of S.photos){
     const d = Math.hypot(p.x - c.x, p.z - c.z);
-    if (d > PHOTO_PREVIEW_M || Math.abs(angleDiff(p.h, c.heading)) > 50) continue;
-    if (!best || d < best.d) best = {d, p};
+    if (d < PROJ_RANGE_M) cands.push({d, p});
   }
-  const fig = $("photo");
-  if (best && S.view !== 3){
-    if ($("photoImg").dataset.id !== best.p.id){
-      $("photoImg").src = DATA_URL + "photos/" + best.p.f; $("photoImg").dataset.id = best.p.id;
-      $("photoCap").textContent = "Foto: " + best.p.u + (best.p.d ? " · " + best.p.d : "") + " · CC BY-SA";
-    }
-    fig.classList.add("on");
-  } else fig.classList.remove("on");
+  cands.sort((a, b)=> a.d - b.d);
+  const slots = [["tex0","proj0","cam0","w0"], ["tex1","proj1","cam1","w1"]];
+  for (let i = 0; i < 2; i++){
+    const [tk, pk, ck, wk] = slots[i];
+    const cand = cands[i];
+    if (!cand){ u[wk].value = 0; continue; }
+    const e = getTexture(cand.p);
+    if (!e.ready){ u[wk].value = 0; continue; }
+    u[tk].value = e.tex;
+    S.three.proj.matrixFor(cand.p, u[pk].value);
+    u[ck].value.set(cand.p.x, PROJ_CAM_H, cand.p.z);
+    u[wk].value = clamp(1 - cand.d / PROJ_RANGE_M, 0.15, 1) * (i === 0 ? 1 : 0.8);
+  }
+  // Nachbarn der Folge vorladen, damit der Wechsel ohne Lücke passiert
+  if (cands[0] && cands[0].p.s !== undefined){
+    const p = cands[0].p;
+    S.photos.forEach(q=>{ if (q.s === p.s && Math.abs(q.n - p.n) === 1) getTexture(q); });
+  }
 }
 
 /* Fotofahrt: bildschirmfüllend das Bild, das in Fahrtrichtung am nächsten liegt.
@@ -1128,7 +1226,6 @@ function stopDriving(){
   S.running = false;
   if (S.raf) cancelAnimationFrame(S.raf);
   S.raf = null;
-  $("photo").classList.remove("on");
   setFotoLayer(false);
 }
 
@@ -1138,7 +1235,7 @@ function tick(now){
   S.last = now;
   if (!S.paused) drive(dt);
   S.tileTimer -= dt; if (S.tileTimer <= 0){ S.tileTimer = TILE_CHECK_S; updateTiles(); }
-  S.photoTimer -= dt; if (S.photoTimer <= 0){ S.photoTimer = 0.5; updatePhotos(); }
+  S.photoTimer -= dt; if (S.photoTimer <= 0){ S.photoTimer = 0.15; updateProjection(); }
   S.foto.timer -= dt; if (S.view === 3 && S.foto.timer <= 0){ S.foto.timer = 0.2; updateFotofahrt(); }
   updateCamera(dt);
   S.three.ground.position.set(S.car.x, -0.06, S.car.z);
