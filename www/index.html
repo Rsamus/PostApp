@@ -375,10 +375,12 @@ const BIRD_UP       = 46;
 
 const ROAD_SCALE    = 2.0;    // Fahrbahnen breiter als in OSM angegeben
 
-const PROJ_RANGE_M  = 45;     // Fotoprojektion: Fotos bis zu diesem Abstand verwenden
+const PROJ_RANGE_M  = 70;     // Fotoprojektion: Fotos bis zu diesem Abstand vom Auto prüfen
+const PROJ_LOOK_M   = 18;     // Zielpunkt vor/hinter dem Auto, den ein Foto abbilden soll
+const PROJ_MAX_D    = 60;     // ein Foto darf höchstens so weit vom Zielpunkt entfernt sein
 const PROJ_CAM_H    = 1.4;    // angenommene Kamerahöhe der Aufnahmen (Dashcam)
 const PROJ_DEFAULT_HFOV = 95; // Bildwinkel, wenn keine Brennweite bekannt ist (Grad)
-const PROJ_MAX_TEX  = 24;     // Texturen im Speicher
+const PROJ_MAX_TEX  = 32;     // Texturen im Speicher
 const FOTO_RANGE_M  = 30;     // Fotofahrt: Bild muss so nah sein
 const FOTO_ANGLE    = 55;     // ... und so ähnlich gerichtet (Grad)
 
@@ -996,10 +998,10 @@ void main(){
 
 const PROJ_FRAG = `
 uniform vec3 baseColor; uniform vec3 fogColor; uniform float fogNear; uniform float fogFar; uniform vec3 sunDir;
-uniform sampler2D tex0; uniform sampler2D tex1;
-uniform mat4 proj0; uniform mat4 proj1;
-uniform vec3 cam0; uniform vec3 cam1;
-uniform float w0; uniform float w1;
+uniform sampler2D tex0; uniform sampler2D tex1; uniform sampler2D tex2; uniform sampler2D tex3;
+uniform mat4 proj0; uniform mat4 proj1; uniform mat4 proj2; uniform mat4 proj3;
+uniform vec3 cam0; uniform vec3 cam1; uniform vec3 cam2; uniform vec3 cam3;
+uniform float w0; uniform float w1; uniform float w2; uniform float w3;
 varying vec3 vWorld; varying vec3 vNormal; varying vec3 vColor;
 
 vec2 projUv(mat4 P){ vec4 c = P * vec4(vWorld, 1.0); return c.xy / c.w * 0.5 + 0.5; }
@@ -1022,11 +1024,15 @@ void main(){
   vec3 col = baseColor * vColor * light;
   float a0 = projWeight(proj0, cam0, N) * w0;
   float a1 = projWeight(proj1, cam1, N) * w1;
-  float sum = a0 + a1;
+  float a2 = projWeight(proj2, cam2, N) * w2;
+  float a3 = projWeight(proj3, cam3, N) * w3;
+  float sum = a0 + a1 + a2 + a3;
   if (sum > 0.001){
     vec3 pc = vec3(0.0);
     if (a0 > 0.0) pc += texture2D(tex0, projUv(proj0)).rgb * a0;
     if (a1 > 0.0) pc += texture2D(tex1, projUv(proj1)).rgb * a1;
+    if (a2 > 0.0) pc += texture2D(tex2, projUv(proj2)).rgb * a2;
+    if (a3 > 0.0) pc += texture2D(tex3, projUv(proj3)).rgb * a3;
     pc /= sum;
     col = mix(col, pc, min(1.0, sum));
   }
@@ -1040,10 +1046,12 @@ function makeProjection(){
   const shared = {
     fogColor:{value:new THREE.Color(0x8FA6B8)}, fogNear:{value:140}, fogFar:{value:520},
     sunDir:{value:new THREE.Vector3(120, 220, -90).normalize()},
-    tex0:{value:blank}, tex1:{value:blank},
+    tex0:{value:blank}, tex1:{value:blank}, tex2:{value:blank}, tex3:{value:blank},
     proj0:{value:new THREE.Matrix4()}, proj1:{value:new THREE.Matrix4()},
+    proj2:{value:new THREE.Matrix4()}, proj3:{value:new THREE.Matrix4()},
     cam0:{value:new THREE.Vector3()}, cam1:{value:new THREE.Vector3()},
-    w0:{value:0}, w1:{value:0},
+    cam2:{value:new THREE.Vector3()}, cam3:{value:new THREE.Vector3()},
+    w0:{value:0}, w1:{value:0}, w2:{value:0}, w3:{value:0},
   };
   const projCam = new THREE.PerspectiveCamera(60, 4/3, 0.5, 400);
   return {
@@ -1088,34 +1096,59 @@ function getTexture(p){
 
 const texLoader = (typeof THREE !== "undefined") ? new THREE.TextureLoader() : null;
 
-/* Die zwei nächsten Fotos als Projektoren setzen */
+/* Projektoren wählen: nicht die nächsten Fotos, sondern die, die den Bereich
+   vor bzw. hinter dem Auto tatsächlich abbilden – aus welcher Richtung auch
+   immer. Ein Foto, das 30 m voraus steht und zurückschaut, zeigt genau die
+   Wände zwischen ihm und dem Auto. Slots 0/1: voraus, Slots 2/3: hinter uns. */
+function photoHfov(p){ return p.fl > 0 ? 2 * Math.atan(0.5 / p.fl) : PROJ_DEFAULT_HFOV * RAD; }
+
+function coverageScore(p, qx, qz){
+  const vx = qx - p.x, vz = qz - p.z;
+  const dist = Math.hypot(vx, vz);
+  if (dist < 1.5 || dist > PROJ_MAX_D) return null;
+  const h = p.h * RAD;
+  const cosA = (vx * Math.sin(h) + vz * -Math.cos(h)) / dist;   // Winkel zur Blickrichtung
+  const ang = Math.acos(clamp(cosA, -1, 1));
+  if (ang > photoHfov(p) / 2 - 4 * RAD) return null;             // Zielpunkt liegt außerhalb des Bildes
+  return {p, dist, score: dist + ang * DEG * 0.25};
+}
+
 function updateProjection(){
   const u = S.three.proj.shared;
-  if (!S.photos.length){ u.w0.value = 0; u.w1.value = 0; return; }
-  const c = S.car;
-  const cands = [];
+  const slots = [["tex0","proj0","cam0","w0"], ["tex1","proj1","cam1","w1"],
+                 ["tex2","proj2","cam2","w2"], ["tex3","proj3","cam3","w3"]];
+  if (!S.photos.length){ slots.forEach(s=> u[s[3]].value = 0); return; }
+  const c = S.car, h = c.heading * RAD, fx = Math.sin(h), fz = -Math.cos(h);
+  const qf = [c.x + fx * PROJ_LOOK_M, c.z + fz * PROJ_LOOK_M];
+  const qb = [c.x - fx * PROJ_LOOK_M, c.z - fz * PROJ_LOOK_M];
+  const front = [], back = [];
   for (const p of S.photos){
-    const d = Math.hypot(p.x - c.x, p.z - c.z);
-    if (d < PROJ_RANGE_M) cands.push({d, p});
+    if (Math.hypot(p.x - c.x, p.z - c.z) > PROJ_RANGE_M) continue;
+    const a = coverageScore(p, qf[0], qf[1]); if (a) front.push(a);
+    const b = coverageScore(p, qb[0], qb[1]); if (b) back.push(b);
   }
-  cands.sort((a, b)=> a.d - b.d);
-  const slots = [["tex0","proj0","cam0","w0"], ["tex1","proj1","cam1","w1"]];
-  for (let i = 0; i < 2; i++){
+  front.sort((a, b)=> a.score - b.score);
+  back.sort((a, b)=> a.score - b.score);
+  const chosen = [];
+  const take = (list, n)=>{ for (const e of list){ if (chosen.length >= n) break;
+    if (!chosen.some(x=> x && x.p.id === e.p.id)) chosen.push(e); } while (chosen.length < n) chosen.push(null); };
+  take(front, 2); take(back, 4);
+
+  chosen.forEach((cand, i)=>{
     const [tk, pk, ck, wk] = slots[i];
-    const cand = cands[i];
-    if (!cand){ u[wk].value = 0; continue; }
+    if (!cand){ u[wk].value = 0; return; }
     const e = getTexture(cand.p);
-    if (!e.ready){ u[wk].value = 0; continue; }
+    if (!e.ready){ u[wk].value = 0; return; }
     u[tk].value = e.tex;
     S.three.proj.matrixFor(cand.p, u[pk].value);
     u[ck].value.set(cand.p.x, PROJ_CAM_H, cand.p.z);
-    u[wk].value = clamp(1 - cand.d / PROJ_RANGE_M, 0.15, 1) * (i === 0 ? 1 : 0.8);
-  }
-  // Nachbarn der Folge vorladen, damit der Wechsel ohne Lücke passiert
-  if (cands[0] && cands[0].p.s !== undefined){
-    const p = cands[0].p;
-    S.photos.forEach(q=>{ if (q.s === p.s && Math.abs(q.n - p.n) === 1) getTexture(q); });
-  }
+    u[wk].value = clamp(1 - cand.dist / PROJ_MAX_D, 0.2, 1) * (i % 2 === 0 ? 1 : 0.7);
+  });
+  // Nachbarn der gewählten Folgen vorladen
+  chosen.forEach(cand=>{
+    if (!cand || cand.p.s === undefined) return;
+    S.photos.forEach(q=>{ if (q.s === cand.p.s && Math.abs(q.n - cand.p.n) === 1) getTexture(q); });
+  });
 }
 
 /* Fotofahrt: bildschirmfüllend das Bild, das in Fahrtrichtung am nächsten liegt.
